@@ -19,6 +19,12 @@ Sistem Penilaian Tipologi Perangkat Daerah (PP 18/2016) for Pemprov Kalimantan T
 - Login for all 4 roles returns token + role; `/api/auth/me` works with Bearer, 403 without.
 - Login page renders; each role lands on its dashboard (Panel Administrator / Dashboard Penilai / Dashboard Verifikator / Dashboard Perangkat Daerah); "Keluar" returns to `/login`.
 
+## Re-setup from `rianianggun/balanga1` branch `clone1` (2026-09)
+- Cloned to `/tmp/balanga1`, diffed vs `/app`: source identical except 2 backend test files; synced via rsync (excluding `.git`, `.emergent`, `.env`, `node_modules`). Repo has no `yarn.lock`; kept existing `/app/frontend/yarn.lock` (package.json identical).
+- Backend: `pip install -r requirements.txt` (minus `emergentintegrations`/`litellm` pins, already present in venv). Frontend: `rm -rf node_modules && yarn install --frozen-lockfile` (first attempt hit EEXIST symlink race; clean retry succeeded, 945 pkgs).
+- `.env` files already present incl. `EMERGENT_LLM_KEY` and `SEED_DEMO=true` → startup logs "Storage initialized" + "Demo submissions seeded" (406 PP 18/2016 indicators loaded).
+- Verified: `POST /api/auth/login` admin returns JWT; frontend compiled, `/login` renders Balanga login page. Credentials in `/app/memory/test_credentials.md`.
+
 ## Backlog / next steps
 - P1: Add `EMERGENT_LLM_KEY` to enable object storage (evidence uploads) and AI scoring helpers.
 - P1: Add Stripe keys if payments are needed.
