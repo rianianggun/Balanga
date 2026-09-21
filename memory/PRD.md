@@ -1,48 +1,25 @@
-# PRD — Si-Scoring Kalteng (Penilaian Tipologi Perangkat Daerah)
+# PRD — Ririn / Si-Scoring Kalteng (branch `balanga`)
 
 ## Original problem statement
-Website scoring perangkat daerah dengan peran penilai, verifikator, perangkat (+admin). Data diverifikasi verifikator sebelum ke penilai; hasil terlihat perangkat; jika ditolak dikembalikan dengan catatan & mengulang. Awalnya disebut "Permendagri 18/2016"; setelah riset model yang tepat = PP 18/2016 (tipologi perangkat daerah A/B/C).
+Clone `https://github.com/rianianggun/Ririn.git` (branch `balanga`), install all dependencies (backend `requirements.txt` + frontend `package.json`), create the gitignored `.env` files, and run the app in **minimal mode** (no Stripe / LLM keys). Verify backend responds on :8001, frontend loads the Login page, and Admin/Penilai/Verifikator/Perangkat dashboards are reachable after auth.
 
-## Model penilaian (PP 18/2016) — v2
-- Faktor Umum (bobot 20%, 3 indikator: Jumlah Penduduk, Luas Wilayah, Jumlah APBD) — diunggah sekali per periode (disalin otomatis ke pengajuan lain).
-- Faktor Teknis (bobot 80%) per level (provinsi/kabupaten) + urusan (32 "Bidang ...") + sub-urusan (khusus Bidang Trantibumlinmas: Ketentraman & Ketertiban Umum, Sub Urusan Kebakaran).
-- Skor per indikator interval kelas: 200/400/600/800/1000.
-- Total urusan = 0.2·rata2 umum + 0.8·rata2 teknis; opsi ×1,1 di Laporan.
-- Tipe: A(>800), B(601–800), C(401–600), Bidang(301–400), Subbidang(≤300).
+## What the app is
+Sistem Penilaian Tipologi Perangkat Daerah (PP 18/2016) for Pemprov Kalimantan Tengah. Roles: `admin`, `perangkat` (submits data), `verifikator` (verifies), `penilai` (scores → Tipe A/B/C). FastAPI + Motor/MongoDB backend, React 19 + CRACO + Tailwind/shadcn frontend, JWT auth (PyJWT + bcrypt), openpyxl exports, optional Emergent object storage + LLM scoring helpers, optional Stripe.
 
-## Peran & isolasi area
-- Admin: semua. Penilai: semua. Verifikator: hanya area-nya. Perangkat: hanya milik sendiri (area otomatis dari akun).
-- 15 area: Provinsi Kalimantan Tengah + 13 kabupaten + Kota Palangka Raya.
+## Architecture / setup done (2026-06)
+- Repo copied into `/app` (backend → `/app/backend`, frontend → `/app/frontend`), preserving `/app/.git` and `/app/.emergent`.
+- Backend deps: all of `requirements.txt` installed except `emergentintegrations==0.2.0` and the `litellm` wheel, which conflict when pinned together — both were already present in the environment (0.2.0 / 1.80.0) and `server.py` does not import them directly, so nothing was stubbed.
+- Frontend deps: `yarn install --frozen-lockfile` succeeded incl. `@emergentbase/*` dev tooling (no fallback needed).
+- `/app/backend/.env`: `MONGO_URL`, `DB_NAME=ririn`, `CORS_ORIGINS`, `FRONTEND_URL` (used by CORS middleware), `JWT_SECRET`, `ADMIN_EMAIL=admin@ririn.go.id`, `ADMIN_PASSWORD=Admin123!`. Note: `EmailStr` rejects `.local` TLDs, hence `.go.id`.
+- `/app/frontend/.env`: `REACT_APP_BACKEND_URL` (preview URL), `WDS_SOCKET_PORT=443`.
+- Services run via supervisor (backend :8001, frontend :3000, mongodb). `seed()` on startup creates admin + 3 demo users, indicators, and the current-year period.
+- Minimal mode: `EMERGENT_LLM_KEY` absent → "Storage init failed: 400" is logged at startup and file upload / AI scoring are dormant; Stripe absent.
 
-## Status flow
-draft → menunggu_verifikasi → (ditolak → perangkat, ulang) / menunggu_penilaian → selesai
+## Verification (testing agent, iteration_4.json) — all passed
+- Login for all 4 roles returns token + role; `/api/auth/me` works with Bearer, 403 without.
+- Login page renders; each role lands on its dashboard (Panel Administrator / Dashboard Penilai / Dashboard Verifikator / Dashboard Perangkat Daerah); "Keluar" returns to `/login`.
 
-## Architecture
-- Backend FastAPI + MongoDB, JWT (bcrypt/PyJWT). Object storage utk berkas. openpyxl utk export Excel.
-- Frontend React 19 + Tailwind/shadcn + recharts + sonner.
-
-## Implemented
-### v1 (2026-06, arsip): model kematangan Permendagri 99/2018 (diganti).
-### v2 (2026-06): PP 18/2016
-- Auth 4 peran, area wajib utk perangkat/verifikator; admin = riani.anggun.adp@gmail.com.
-- Indikator terstruktur (umum/teknis per level+urusan+sub-urusan); Admin CRUD via menu.
-- Pengajuan per urusan: unggah Faktor Umum (3) + Faktor Teknis (N); faktor umum disalin antar pengajuan.
-- Verifikasi/tolak+catatan (isolasi area); loop perbaikan.
-- Penilaian: centang OK, catatan, Data Hasil Validasi, Skor per indikator.
-- Laporan Hasil Penilaian (penilai): pilih Area+Perangkat, opsi ×1,1, tabel per urusan (Total, Nilai Akhir, Tipe), simpan, unduh Excel. Perangkat lihat laporan area-nya.
-- Pemberitahuan evaluasi (bell, dari periode aktif). Kunci jendela unggah.
-- Tren skor per tahun + rata-rata per area (grafik). Jejak audit (admin).
-- Diuji: backend 11/11 pytest, frontend smoke 100%.
-
-## Backlog (P1/P2)
-- P1: Reminder terjadwal otomatis (cron) menjelang buka/tutup periode + email.
-- P2: Validasi start_date pada jendela unggah; unifikasi error login 422→401.
-- P2: Sertifikat PDF tipologi; perbandingan multi-tahun per perangkat di grafik khusus.
-
-## Update 2026-06 (impor lampiran)
-- Fitur Impor Lampiran: Admin unggah Excel (sheet Provinsi & Kabupaten Kota) → parser mengisi indikator teknis otomatis (406 indikator, 42 urusan termasuk fungsi penunjang). Idempotent (delete-then-insert per baris).
-- Endpoint: POST /api/indicators/import, GET /api/reference/urusan (daftar urusan + sub-urusan dinamis dari DB).
-- Dropdown urusan (perangkat & admin) kini dinamis mengikuti indikator yang ada; sub-urusan otomatis (Trantibumlinmas → Ketentraman & Ketertiban Umum, Sub Urusan Kebakaran).
-
-## Next tasks
-- Impor indikator lampiran; reminder terjadwal; lengkapi seluruh urusan.
+## Backlog / next steps
+- P1: Add `EMERGENT_LLM_KEY` to enable object storage (evidence uploads) and AI scoring helpers.
+- P1: Add Stripe keys if payments are needed.
+- P2: Set `FRONTEND_URL` to the production domain on deploy.
