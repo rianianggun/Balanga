@@ -28,3 +28,8 @@ export async function openFile(fileId) {
   window.open(url, "_blank", "noopener");
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+
+export function downloadSurat(submissionId) {
+  const token = localStorage.getItem("token");
+  window.open(`${API}/submissions/${submissionId}/surat-verifikasi?auth=${token}`, "_blank", "noopener");
+}

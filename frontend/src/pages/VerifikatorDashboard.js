@@ -1,24 +1,19 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { api, formatApiErrorDetail, openFile } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { api, downloadSurat } from "../lib/api";
 import { Navbar } from "../components/Navbar";
 import { StatusPill } from "../components/StatusPill";
 import { Button } from "../components/ui/button";
-import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
-import { toast } from "sonner";
-import { ShieldCheck, CheckCircle2, XCircle, Eye, FileText, MapPin } from "lucide-react";
+import { ShieldCheck, Eye, MapPin, FileBadge } from "lucide-react";
 
 export default function VerifikatorDashboard() {
+  const navigate = useNavigate();
   const [subs, setSubs] = useState([]);
   const [period, setPeriod] = useState(null);
   const [me, setMe] = useState(null);
-  const [detail, setDetail] = useState(null);
-  const [inds, setInds] = useState({ umum: [], teknis: [] });
-  const [rejectNote, setRejectNote] = useState("");
-  const [rejectMode, setRejectMode] = useState(false);
   const [yearFilter, setYearFilter] = useState("all");
 
   const load = useCallback(async () => {
@@ -26,20 +21,6 @@ export default function VerifikatorDashboard() {
     setSubs(s.data); setPeriod(p.data && p.data.id ? p.data : null); setMe(m.data);
   }, []);
   useEffect(() => { load(); }, [load]);
-
-  const openDetail = async (s) => {
-    setDetail(s); setRejectMode(false); setRejectNote("");
-    const { data } = await api.get("/indicators/for-submission", { params: { level: s.level, urusan: s.urusan, sub_urusan: s.sub_urusan || undefined } });
-    setInds(data);
-  };
-  const act = async (action) => {
-    if (action === "reject" && !rejectNote.trim()) return toast.error("Catatan perbaikan wajib diisi");
-    try {
-      await api.post(`/submissions/${detail.id}/verify`, { action, notes: rejectNote });
-      toast.success(action === "approve" ? "Terverifikasi, diteruskan ke penilai" : "Dikembalikan ke perangkat");
-      setDetail(null); setRejectNote(""); setRejectMode(false); await load();
-    } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
-  };
 
   const years = [...new Set(subs.map((s) => s.year))].sort((a, b) => b - a);
   const byYear = (list) => yearFilter === "all" ? list : list.filter((s) => String(s.year) === String(yearFilter));
@@ -61,7 +42,12 @@ export default function VerifikatorDashboard() {
               <td className="px-4 py-3 text-xs text-muted-foreground">{s.perangkat_name}</td>
               <td className="px-4 py-3">{s.year}</td>
               {showAcc ? <td className="px-4 py-3 text-xs text-emerald-700">{fmt(s.verification?.verified_at)}</td> : <td className="px-4 py-3"><StatusPill status={s.status} /></td>}
-              <td className="px-4 py-3 text-right"><Button variant="outline" size="sm" className="gap-1.5" data-testid={`review-btn-${s.id}`} onClick={() => openDetail(s)}><Eye className="w-4 h-4" /> {s.status === "menunggu_verifikasi" ? "Tinjau" : "Detail"}</Button></td>
+              <td className="px-4 py-3 text-right">
+                <div className="inline-flex gap-2">
+                  {showAcc && <Button variant="ghost" size="sm" className="gap-1.5 text-emerald-700" data-testid={`surat-btn-${s.id}`} onClick={() => downloadSurat(s.id)}><FileBadge className="w-4 h-4" /> Surat</Button>}
+                  <Button variant="outline" size="sm" className="gap-1.5" data-testid={`review-btn-${s.id}`} onClick={() => navigate(`/verifikasi/${s.id}`)}><Eye className="w-4 h-4" /> {s.status === "menunggu_verifikasi" ? "Tinjau" : "Detail"}</Button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -86,51 +72,6 @@ export default function VerifikatorDashboard() {
           <TabsContent value="rejected" className="mt-6"><Table list={rejected} /></TabsContent>
         </Tabs>
       </main>
-
-      <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          {detail && (
-            <>
-              <DialogHeader><DialogTitle>{detail.device_name}</DialogTitle></DialogHeader>
-              <div className="text-xs text-muted-foreground -mt-2">{detail.area} · {detail.urusan}{detail.sub_urusan ? ` — ${detail.sub_urusan}` : ""} · {detail.perangkat_name}</div>
-              <div className="space-y-2 mt-4">
-                <div className="text-sm font-semibold text-slate-900">Faktor Umum</div>
-                {inds.umum.map((ind) => <FileLine key={ind.id} ind={ind} detail={detail} />)}
-                <div className="text-sm font-semibold text-slate-900 pt-2">Faktor Teknis</div>
-                {inds.teknis.map((ind) => <FileLine key={ind.id} ind={ind} detail={detail} />)}
-              </div>
-              {detail.status === "menunggu_verifikasi" && (
-                <div className="mt-4 space-y-3">
-                  {rejectMode && <Textarea data-testid="reject-note-input" placeholder="Catatan perbaikan untuk perangkat daerah..." value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} rows={3} />}
-                  <div className="flex gap-3">
-                    {!rejectMode ? (
-                      <>
-                        <Button className="flex-1 gap-2 bg-emerald-600 hover:bg-emerald-700" data-testid="verify-approve-btn" onClick={() => act("approve")}><CheckCircle2 className="w-4 h-4" /> Setujui & Teruskan</Button>
-                        <Button variant="outline" className="flex-1 gap-2 text-red-600 border-red-300 hover:bg-red-50 hover:text-red-700" data-testid="verify-reject-mode-btn" onClick={() => setRejectMode(true)}><XCircle className="w-4 h-4" /> Kembalikan</Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button variant="destructive" className="flex-1 gap-2" data-testid="verify-reject-confirm-btn" onClick={() => act("reject")}><XCircle className="w-4 h-4" /> Kirim Perbaikan</Button>
-                        <Button variant="ghost" className="flex-1" onClick={() => setRejectMode(false)}>Batal</Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function FileLine({ ind, detail }) {
-  const up = (detail.uploads || {})[ind.id];
-  return (
-    <div className="rounded-lg border border-border p-3 flex items-center justify-between gap-3">
-      <div className="text-sm font-medium text-slate-800 min-w-0"><span className="text-muted-foreground">{ind.order}.</span> {ind.name}</div>
-      {up ? <Button variant="ghost" size="sm" className="gap-1.5 text-emerald-700 shrink-0" data-testid={`view-file-${ind.id}`} onClick={() => openFile(up.file_id)}><FileText className="w-4 h-4" /> Lihat</Button> : <span className="text-xs text-red-600 shrink-0">Tidak ada</span>}
     </div>
   );
 }

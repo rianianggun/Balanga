@@ -8,6 +8,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import PerangkatDashboard from "./pages/PerangkatDashboard";
 import VerifikatorDashboard from "./pages/VerifikatorDashboard";
 import PenilaiDashboard from "./pages/PenilaiDashboard";
+import VerifikatorReviewPage from "./pages/VerifikatorReviewPage";
 import { Toaster } from "./components/ui/sonner";
 
 function Dashboard() {
@@ -17,6 +18,12 @@ function Dashboard() {
   if (user.role === "verifikator") return <VerifikatorDashboard />;
   if (user.role === "penilai") return <PenilaiDashboard />;
   return <div className="p-10 text-center">Peran tidak dikenal.</div>;
+}
+
+function VerifikasiRoute() {
+  const { user } = useAuth();
+  if (user.role !== "verifikator") return <Navigate to="/" replace />;
+  return <VerifikatorReviewPage />;
 }
 
 function App() {
@@ -34,6 +41,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/verifikasi/:sid"
+              element={
+                <ProtectedRoute>
+                  <VerifikasiRoute />
                 </ProtectedRoute>
               }
             />

@@ -21,6 +21,9 @@ import jwt
 import requests
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from surat import build_surat_pdf
+from ai_scoring import recommend_scores
+from demo_seed import seed_demo
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -167,9 +170,31 @@ def parse_indicator_items(text, n):
             items.append(seg)
     return items
 
+def normalize_scores(vals):
+    from collections import Counter
+    cands = [round(v * 5 / (k + 1), 2) for k, v in enumerate(vals) if v > 0]
+    if not cands:
+        return vals
+    cnt = Counter(cands); best = max(cnt.values())
+    m = min(c for c, n in cnt.items() if n == best)
+    out = [round(m * (k + 1) / 5, 2) for k in range(5)]
+    return [int(x) if float(x).is_integer() else x for x in out]
+
+def parse_score_lines(text):
+    out = {}
+    for line in str(text or "").splitlines():
+        m = re.match(r'\s*(\d+)[\.\)]?\s*(.*)', line)
+        if not m:
+            continue
+        nums = [int(float(x)) for x in re.findall(r'\d+(?:\.\d+)?', m.group(2))]
+        if len(nums) >= 5:
+            out[int(m.group(1))] = (normalize_scores(nums[:5]), nums[:5])
+    return out
+
 async def import_indicators_from_workbook(wb):
     sheet_level = {"Provinsi": "provinsi", "Kabupaten Kota": "kabupaten", "Kabupaten/Kota": "kabupaten"}
     inserted = 0
+    umum_done = False
     for sn in wb.sheetnames:
         level = sheet_level.get(sn)
         if not level:
@@ -179,7 +204,14 @@ async def import_indicators_from_workbook(wb):
             if not row or len(row) < 4:
                 continue
             kategori, name, count, daftar = row[0], row[1], row[2], row[3]
-            if not name or not daftar or not str(kategori or "").lower().startswith("faktor teknis"):
+            skor = parse_score_lines(row[4]) if len(row) > 4 else {}
+            kat = str(kategori or "").lower()
+            if kat.startswith("faktor umum") and not umum_done and skor:
+                for order, (sc, raw) in skor.items():
+                    await db.indicators.update_one({"type": "umum", "order": order}, {"$set": {"scores": sc, "scores_raw": raw}})
+                umum_done = True
+                continue
+            if not name or not daftar or not kat.startswith("faktor teknis"):
                 continue
             try:
                 n = int(count or 0)
@@ -191,19 +223,29 @@ async def import_indicators_from_workbook(wb):
             urusan, sub = canonical_urusan(name)
             await db.indicators.delete_many({"type": "teknis", "level": level, "urusan": urusan, "sub_urusan": sub})
             for order, item in enumerate(items, start=1):
+                sc, raw = skor.get(order, (None, None))
                 await db.indicators.insert_one({"id": str(uuid.uuid4()), "type": "teknis", "name": item,
                     "description": "", "level": level, "urusan": urusan, "sub_urusan": sub,
-                    "order": order, "created_at": now_iso()})
+                    "order": order, "scores": sc, "scores_raw": raw, "created_at": now_iso()})
                 inserted += 1
     return inserted
 
 
-def tipe_from_score(v: float) -> dict:
-    if v > 800: return {"key": "A", "label": "Tipe A"}
-    if v > 600: return {"key": "B", "label": "Tipe B"}
+def tipe_from_score(v: float, urusan: str = None, combined: bool = False) -> dict:
+    A = {"key": "A", "label": "Tipe A"}; B = {"key": "B", "label": "Tipe B"}
+    if combined:
+        return A if v > 975 else B
+    if urusan and _norm(urusan) == "kecamatan":
+        return A if v > 600 else B
+    if v > 800: return A
+    if v > 600: return B
     if v > 400: return {"key": "C", "label": "Tipe C"}
     if v > 300: return {"key": "BIDANG", "label": "Setingkat Bidang"}
     return {"key": "SUBBIDANG", "label": "Setingkat Subbidang/Seksi"}
+
+def sub_total(sc: dict) -> float:
+    sc = sc or {}
+    return round(sc.get("total", (sc.get("umum_total", 0) + sc.get("teknis_total", 0))), 2)
 
 now_iso = lambda: datetime.now(timezone.utc).isoformat()
 
@@ -240,6 +282,7 @@ class IndicatorInput(BaseModel):
     sub_urusan: Optional[str] = None
     weight: float = 1.0
     order: Optional[int] = 0
+    scores: Optional[List[float]] = None
 
 class PeriodInput(BaseModel):
     year: int
@@ -258,12 +301,14 @@ class SubmissionCreate(BaseModel):
 class VerifyInput(BaseModel):
     action: str
     notes: Optional[str] = ""
+    acknowledged: bool = False
 
 class ScoreItem(BaseModel):
     indicator_id: str
     ok: bool = True
     note: Optional[str] = ""
     data_validasi: Optional[str] = ""
+    kelas: Optional[str] = None
     score: float
 
 class ScoreInput(BaseModel):
@@ -615,9 +660,11 @@ async def verify_submission(sid: str, input: VerifyInput, user: dict = Depends(r
     if s["status"] != "menunggu_verifikasi": raise HTTPException(status_code=403, detail="Pengajuan tidak dalam status verifikasi")
     hist = s.get("history", [])
     if input.action == "approve":
+        if not input.acknowledged:
+            raise HTTPException(status_code=400, detail="Anda harus mencentang pernyataan telah membaca dan memeriksa seluruh berkas sebelum memverifikasi")
         hist.append({"status": "menunggu_penilaian", "at": now_iso(), "by": user["name"]})
         await db.submissions.update_one({"id": sid}, {"$set": {"status": "menunggu_penilaian",
-            "verification": {"verifikator_id": user["id"], "verifikator_name": user["name"], "notes": input.notes, "verified_at": now_iso()},
+            "verification": {"verifikator_id": user["id"], "verifikator_name": user["name"], "notes": input.notes, "verified_at": now_iso(), "acknowledged": True},
             "updated_at": now_iso(), "history": hist}})
         await add_audit(sid, "Verifikasi disetujui", user, input.notes or "")
         return {"message": "Terverifikasi, diteruskan ke penilai"}
@@ -631,6 +678,53 @@ async def verify_submission(sid: str, input: VerifyInput, user: dict = Depends(r
         return {"message": "Dikembalikan ke perangkat untuk perbaikan"}
     raise HTTPException(status_code=400, detail="Aksi tidak valid")
 
+async def user_from_token(auth, authorization):
+    token = auth or (authorization[7:] if authorization and authorization.startswith("Bearer ") else None)
+    if not token: raise HTTPException(status_code=401, detail="Tidak terautentikasi")
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token tidak valid")
+    u = await db.users.find_one({"id": payload["sub"]})
+    if not u: raise HTTPException(status_code=401, detail="Pengguna tidak ditemukan")
+    return u
+
+@api_router.get("/submissions/{sid}/surat-verifikasi")
+async def surat_verifikasi(sid: str, auth: str = Query(None), authorization: str = Header(None)):
+    u = await user_from_token(auth, authorization)
+    s = await db.submissions.find_one({"id": sid}, {"_id": 0})
+    if not s: raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if u["role"] == "perangkat" and s["perangkat_user_id"] != u["id"]:
+        raise HTTPException(status_code=403, detail="Akses ditolak")
+    if u["role"] == "verifikator" and s["area"] != u.get("area"):
+        raise HTTPException(status_code=403, detail="Akses ditolak (area berbeda)")
+    if s["status"] not in ("menunggu_penilaian", "selesai") or not s.get("verification"):
+        raise HTTPException(status_code=400, detail="Pengajuan belum terverifikasi")
+    pdf = build_surat_pdf(s)
+    fname = f"Surat_Keterangan_Verifikasi_{s['device_name'].replace(' ', '_')}.pdf"
+    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition": f'inline; filename="{fname}"'})
+
+@api_router.post("/submissions/{sid}/ai-recommend")
+async def ai_recommend(sid: str, user: dict = Depends(require_roles("penilai"))):
+    if not EMERGENT_KEY:
+        raise HTTPException(status_code=503, detail="Fitur AI belum aktif (EMERGENT_LLM_KEY belum diatur)")
+    s = await db.submissions.find_one({"id": sid}, {"_id": 0})
+    if not s: raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if s["status"] != "menunggu_penilaian": raise HTTPException(status_code=403, detail="Pengajuan belum terverifikasi")
+    req_ids, umum, teknis = await required_indicator_ids(s)
+    file_ids = [m["file_id"] for m in (s.get("uploads") or {}).values() if m]
+    records = {r["id"]: r for r in await db.files.find({"id": {"$in": file_ids}, "is_deleted": False}).to_list(500)}
+    def fetch(fid):
+        rec = records.get(fid)
+        if not rec: raise ValueError("Berkas tidak ditemukan")
+        return get_object(rec["storage_path"])[0]
+    items = await recommend_scores(s, umum + teknis, fetch)
+    rec = {"items": items, "model": "gemini-3.1-pro-preview", "at": now_iso(), "by": user["name"]}
+    await db.submissions.update_one({"id": sid}, {"$set": {"ai_recommendation": rec}})
+    await add_audit(sid, "Rekomendasi AI dibuat", user, f"{sum(1 for i in items if i.get('kelas'))}/{len(items)} indikator")
+    return rec
+
 @api_router.post("/submissions/{sid}/score")
 async def score_submission(sid: str, input: ScoreInput, user: dict = Depends(require_roles("penilai"))):
     s = await db.submissions.find_one({"id": sid})
@@ -638,46 +732,58 @@ async def score_submission(sid: str, input: ScoreInput, user: dict = Depends(req
     if s["status"] != "menunggu_penilaian": raise HTTPException(status_code=403, detail="Pengajuan belum terverifikasi")
     req_ids, umum, teknis = await required_indicator_ids(s)
     umum_ids = {i["id"] for i in umum}
-    weight_map = {i["id"]: i.get("weight", 1.0) for i in teknis}
+    score_map = {i["id"]: i.get("scores") for i in umum + teknis}
     name_map = {i["id"]: i["name"] for i in umum + teknis}
     submitted = {it.indicator_id: it for it in input.items}
     if set(submitted.keys()) != set(req_ids):
         raise HTTPException(status_code=400, detail="Semua indikator harus dinilai tepat satu kali")
     validations = {}
-    umum_scores = []
-    teknis_num = teknis_den = 0.0
+    umum_total = teknis_total = 0.0
     for iid, it in submitted.items():
-        if it.score < 0 or it.score > 1000:
+        allowed = score_map.get(iid)
+        if allowed:
+            if it.score not in allowed:
+                raise HTTPException(status_code=400, detail=f"Skor '{name_map.get(iid)}' harus salah satu dari kelas a-e: {', '.join(map(str, allowed))}")
+        elif it.score < 0 or it.score > 1000:
             raise HTTPException(status_code=400, detail="Skor harus 0 - 1000")
         if it.data_validasi and len(str(it.data_validasi)) > 500:
             raise HTTPException(status_code=400, detail="Data Hasil Validasi maksimal 500 karakter")
-        w = 1.0 if iid in umum_ids else weight_map.get(iid, 1.0)
+        kelas = it.kelas or ("abcde"[allowed.index(it.score)] if allowed else None)
         validations[iid] = {"indicator_name": name_map.get(iid, ""), "ok": it.ok, "note": it.note,
-                            "data_validasi": it.data_validasi, "score": it.score, "weight": w}
+                            "data_validasi": it.data_validasi, "kelas": kelas, "score": it.score}
         if iid in umum_ids:
-            umum_scores.append(it.score)
+            umum_total += it.score
         else:
-            teknis_num += it.score * w
-            teknis_den += w
-    umum_avg = round(sum(umum_scores) / len(umum_scores), 2) if umum_scores else 0
-    teknis_avg = round(teknis_num / teknis_den, 2) if teknis_den else 0
+            teknis_total += it.score
+    umum_total = round(umum_total, 2); teknis_total = round(teknis_total, 2)
     scoring = {"penilai_id": user["id"], "penilai_name": user["name"], "validations": validations,
-               "umum_avg": umum_avg, "teknis_avg": teknis_avg, "overall_note": input.overall_note, "scored_at": now_iso()}
+               "umum_total": umum_total, "teknis_total": teknis_total, "total": round(umum_total + teknis_total, 2),
+               "overall_note": input.overall_note, "scored_at": now_iso()}
     hist = s.get("history", []); hist.append({"status": "selesai", "at": now_iso(), "by": user["name"]})
     await db.submissions.update_one({"id": sid}, {"$set": {"status": "selesai", "scoring": scoring, "updated_at": now_iso(), "history": hist}})
-    await add_audit(sid, "Penilaian selesai", user, f"Umum {umum_avg} / Teknis {teknis_avg}")
+    await add_audit(sid, "Penilaian selesai", user, f"Umum {umum_total} / Teknis {teknis_total} / Total {scoring['total']}")
     return {"message": "Penilaian selesai", "scoring": scoring}
 
 # ---------------- Reports ----------------
+def finalize_rows(rows, apply_multiplier):
+    for r in rows:
+        r["final"] = round(r["total"] * 1.1, 2) if apply_multiplier else r["total"]
+        r["tipe"] = tipe_from_score(r["final"], r["urusan"])
+    combined = None
+    if len(rows) >= 2:
+        total = round(rows[0]["umum_total"] + sum(r["teknis_total"] for r in rows), 2)
+        final = round(total * 1.1, 2) if apply_multiplier else total
+        combined = {"urusan_count": len(rows), "umum_total": rows[0]["umum_total"], "teknis_total": round(sum(r["teknis_total"] for r in rows), 2),
+                    "total": total, "final": final, "tipe": tipe_from_score(final, combined=True)}
+    return combined
+
 async def build_report_rows(area, device_name):
     subs = await db.submissions.find({"area": area, "device_name": device_name, "status": "selesai"}, {"_id": 0}).to_list(500)
     rows = []
     for s in subs:
         sc = s.get("scoring") or {}
-        umum = sc.get("umum_avg", 0); teknis = sc.get("teknis_avg", 0)
-        total = round(0.2 * umum + 0.8 * teknis, 2)
         rows.append({"submission_id": s["id"], "urusan": s["urusan"], "sub_urusan": s.get("sub_urusan"),
-                     "umum_avg": umum, "teknis_avg": teknis, "total": total})
+                     "umum_total": sc.get("umum_total", 0), "teknis_total": sc.get("teknis_total", 0), "total": sub_total(sc)})
     return rows
 
 @api_router.get("/reports/perangkat-list")
@@ -692,21 +798,16 @@ async def report_perangkat_list(user: dict = Depends(require_roles("penilai", "a
 async def report_preview(area: str, device_name: str, apply_multiplier: bool = False,
                          user: dict = Depends(require_roles("penilai", "admin"))):
     rows = await build_report_rows(area, device_name)
-    for r in rows:
-        final = round(r["total"] * 1.1, 2) if apply_multiplier else r["total"]
-        r["final"] = final
-        r["tipe"] = tipe_from_score(final)
-    return {"area": area, "device_name": device_name, "apply_multiplier": apply_multiplier, "rows": rows}
+    combined = finalize_rows(rows, apply_multiplier)
+    return {"area": area, "device_name": device_name, "apply_multiplier": apply_multiplier, "rows": rows, "combined": combined}
 
 @api_router.post("/reports")
 async def create_report(input: ReportInput, user: dict = Depends(require_roles("penilai", "admin"))):
     rows = await build_report_rows(input.area, input.device_name)
     if not rows: raise HTTPException(status_code=400, detail="Tidak ada pengajuan selesai untuk perangkat ini")
-    for r in rows:
-        final = round(r["total"] * 1.1, 2) if input.apply_multiplier else r["total"]
-        r["final"] = final; r["tipe"] = tipe_from_score(final)
+    combined = finalize_rows(rows, input.apply_multiplier)
     doc = {"id": str(uuid.uuid4()), "area": input.area, "device_name": input.device_name,
-           "level": AREA_LEVEL.get(input.area), "apply_multiplier": input.apply_multiplier, "rows": rows,
+           "level": AREA_LEVEL.get(input.area), "apply_multiplier": input.apply_multiplier, "rows": rows, "combined": combined,
            "penilai_id": user["id"], "penilai_name": user["name"], "created_at": now_iso()}
     await db.reports.insert_one(doc)
     return {k: v for k, v in doc.items() if k != "_id"}
@@ -727,14 +828,7 @@ async def delete_report(rid: str, user: dict = Depends(require_roles("penilai", 
 
 @api_router.get("/reports/{rid}/excel")
 async def report_excel(rid: str, auth: str = Query(None), authorization: str = Header(None)):
-    token = auth or (authorization[7:] if authorization and authorization.startswith("Bearer ") else None)
-    if not token: raise HTTPException(status_code=401, detail="Tidak terautentikasi")
-    try:
-        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
-        u = await db.users.find_one({"id": payload["sub"]})
-        if not u: raise HTTPException(status_code=401, detail="Pengguna tidak ditemukan")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token tidak valid")
+    u = await user_from_token(auth, authorization)
     r = await db.reports.find_one({"id": rid}, {"_id": 0})
     if not r: raise HTTPException(status_code=404, detail="Laporan tidak ditemukan")
     if u["role"] in ("perangkat", "verifikator") and r["area"] != u.get("area"):
@@ -746,7 +840,7 @@ async def report_excel(rid: str, auth: str = Query(None), authorization: str = H
     ws.append([f"Perangkat Daerah: {r['device_name']}"])
     ws.append([f"Pengali 1,1: {'Ya' if r['apply_multiplier'] else 'Tidak'}"])
     ws.append([])
-    headers = ["No", "Urusan", "Sub Urusan", "Nilai Faktor Umum (20%)", "Nilai Faktor Teknis (80%)", "Total", "Nilai Akhir", "Tipe"]
+    headers = ["No", "Urusan", "Sub Urusan", "Nilai Faktor Umum (maks 200)", "Nilai Faktor Teknis (maks 800)", "Total", "Nilai Akhir", "Tipe"]
     ws.append(headers)
     hr = ws.max_row
     for c in range(1, len(headers) + 1):
@@ -754,8 +848,13 @@ async def report_excel(rid: str, auth: str = Query(None), authorization: str = H
         ws.cell(row=hr, column=c).font = head_font
         ws.cell(row=hr, column=c).alignment = Alignment(horizontal="center", wrap_text=True)
     for idx, row in enumerate(r["rows"], start=1):
-        ws.append([idx, row["urusan"], row.get("sub_urusan") or "-", row["umum_avg"], row["teknis_avg"],
+        ws.append([idx, row["urusan"], row.get("sub_urusan") or "-", row.get("umum_total", 0), row.get("teknis_total", 0),
                    row["total"], row["final"], row["tipe"]["label"]])
+    if r.get("combined"):
+        cb = r["combined"]
+        ws.append(["", f"GABUNGAN {cb['urusan_count']} URUSAN", "-", cb["umum_total"], cb["teknis_total"], cb["total"], cb["final"], cb["tipe"]["label"]])
+        for c in range(1, len(headers) + 1):
+            ws.cell(row=ws.max_row, column=c).font = Font(bold=True)
     widths = [5, 40, 28, 20, 20, 12, 12, 24]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[chr(64 + i)].width = w
@@ -788,9 +887,7 @@ async def stats_yearly(user: dict = Depends(get_current_user)):
     subs = await db.submissions.find(q, {"_id": 0}).to_list(5000)
     by_year = {}
     for s in subs:
-        sc = s.get("scoring") or {}
-        total = round(0.2 * sc.get("umum_avg", 0) + 0.8 * sc.get("teknis_avg", 0), 2)
-        by_year.setdefault(s["year"], []).append(total)
+        by_year.setdefault(s["year"], []).append(sub_total(s.get("scoring")))
     return [{"year": y, "avg_total": round(sum(v) / len(v), 2), "count": len(v)} for y, v in sorted(by_year.items())]
 
 @api_router.get("/stats/by-area")
@@ -798,9 +895,7 @@ async def stats_by_area(user: dict = Depends(require_roles("admin", "penilai")))
     subs = await db.submissions.find({"status": "selesai"}, {"_id": 0}).to_list(5000)
     by_area = {}
     for s in subs:
-        sc = s.get("scoring") or {}
-        total = round(0.2 * sc.get("umum_avg", 0) + 0.8 * sc.get("teknis_avg", 0), 2)
-        by_area.setdefault(s["area"], []).append(total)
+        by_area.setdefault(s["area"], []).append(sub_total(s.get("scoring")))
     return [{"area": a, "avg_total": round(sum(v) / len(v), 2), "count": len(v)} for a, v in by_area.items()]
 
 @api_router.get("/audit")
@@ -895,6 +990,12 @@ async def seed():
         y = datetime.now(timezone.utc).year
         await db.periods.insert_one({"id": str(uuid.uuid4()), "year": y, "name": f"Evaluasi Perangkat Daerah {y}",
                                      "start_date": f"{y}-01-01", "end_date": f"{y}-12-31", "upload_locked": False, "active": True, "created_at": now_iso()})
+    if await db.indicators.count_documents({"type": "teknis", "scores": {"$ne": None}}) == 0:
+        xlsx = ROOT_DIR / "data" / "rekap_pp18.xlsx"
+        if xlsx.exists():
+            from openpyxl import load_workbook
+            n = await import_indicators_from_workbook(load_workbook(xlsx, data_only=True))
+            logger.info(f"Indikator PP 18/2016 dimuat dari Excel: {n}")
 
 @app.on_event("startup")
 async def startup():
@@ -903,6 +1004,11 @@ async def startup():
         init_storage(); logger.info("Storage initialized")
     except Exception as e:
         logger.error(f"Storage init failed: {e}")
+    if os.environ.get("SEED_DEMO", "true").lower() == "true":
+        try:
+            await seed_demo(db, hash_password, put_object, AREA_LEVEL, APP_NAME)
+        except Exception as e:
+            logger.error(f"Demo seed failed: {e}")
 
 app.include_router(api_router)
 app.add_middleware(CORSMiddleware, allow_credentials=True,

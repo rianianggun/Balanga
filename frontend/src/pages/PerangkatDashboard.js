@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { api, formatApiErrorDetail, openFile } from "../lib/api";
+import { api, formatApiErrorDetail, openFile, downloadSurat } from "../lib/api";
 import { Navbar } from "../components/Navbar";
 import { StatusPill } from "../components/StatusPill";
 import { StatusStepper } from "../components/StatusStepper";
@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { toast } from "sonner";
-import { Plus, FileUp, CheckCircle2, AlertTriangle, Eye, Loader2, Send, ArrowLeft, Trash2, Layers } from "lucide-react";
+import { Plus, FileUp, CheckCircle2, AlertTriangle, Eye, Loader2, Send, ArrowLeft, Trash2, Layers, FileBadge } from "lucide-react";
 
 export default function PerangkatDashboard() {
   const [subs, setSubs] = useState([]);
@@ -187,7 +187,12 @@ export default function PerangkatDashboard() {
             <button data-testid="back-to-list" onClick={() => setActiveId(null)} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-slate-900 mb-4"><ArrowLeft className="w-4 h-4" /> Kembali ke daftar</button>
             <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
               <div><h2 className="font-display text-2xl font-extrabold text-slate-900">{active.device_name}</h2><div className="text-sm text-muted-foreground">{active.area} · {active.urusan}{active.sub_urusan ? ` — ${active.sub_urusan}` : ""} · Tahun {active.year}</div></div>
-              <StatusPill status={active.status} />
+              <div className="flex flex-col items-end gap-2">
+                <StatusPill status={active.status} />
+                {["menunggu_penilaian", "selesai"].includes(active.status) && active.verification && (
+                  <Button variant="outline" size="sm" className="gap-1.5 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid="perangkat-download-surat-btn" onClick={() => downloadSurat(active.id)}><FileBadge className="w-4 h-4" /> Surat Keterangan Verifikasi</Button>
+                )}
+              </div>
             </div>
             <div className="mb-6 max-w-2xl"><StatusStepper status={active.status} /></div>
 

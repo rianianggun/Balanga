@@ -80,20 +80,30 @@ export function ReportsPanel({ canManage }) {
               <div className="rounded-xl border border-border overflow-x-auto">
                 <table className="w-full text-sm" data-testid="report-preview-table">
                   <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-                    <tr><th className="px-3 py-2">Urusan</th><th className="px-3 py-2 text-center">F. Umum (20%)</th><th className="px-3 py-2 text-center">F. Teknis (80%)</th><th className="px-3 py-2 text-center">Total</th><th className="px-3 py-2 text-center">Nilai Akhir{multiplier ? " ×1,1" : ""}</th><th className="px-3 py-2 text-center">Tipe</th></tr>
+                    <tr><th className="px-3 py-2">Urusan</th><th className="px-3 py-2 text-center">F. Umum (maks 200)</th><th className="px-3 py-2 text-center">F. Teknis (maks 800)</th><th className="px-3 py-2 text-center">Total</th><th className="px-3 py-2 text-center">Nilai Akhir{multiplier ? " ×1,1" : ""}</th><th className="px-3 py-2 text-center">Tipe</th></tr>
                   </thead>
                   <tbody>
                     {preview.rows.length === 0 && <tr><td colSpan={6} className="text-center py-6 text-muted-foreground">Belum ada urusan selesai dinilai.</td></tr>}
                     {preview.rows.map((r) => (
                       <tr key={r.submission_id} className="border-t border-slate-100">
                         <td className="px-3 py-2 text-slate-700">{r.urusan}{r.sub_urusan ? ` — ${r.sub_urusan}` : ""}</td>
-                        <td className="px-3 py-2 text-center font-mono">{r.umum_avg}</td>
-                        <td className="px-3 py-2 text-center font-mono">{r.teknis_avg}</td>
+                        <td className="px-3 py-2 text-center font-mono">{r.umum_total}</td>
+                        <td className="px-3 py-2 text-center font-mono">{r.teknis_total}</td>
                         <td className="px-3 py-2 text-center font-mono">{r.total}</td>
                         <td className="px-3 py-2 text-center font-mono font-bold text-primary">{r.final}</td>
                         <td className="px-3 py-2 text-center"><TipeBadge tipe={r.tipe} /></td>
                       </tr>
                     ))}
+                    {preview.combined && (
+                      <tr className="border-t-2 border-primary/30 bg-primary/5 font-semibold" data-testid="report-combined-row">
+                        <td className="px-3 py-2 text-slate-900">Gabungan {preview.combined.urusan_count} urusan <span className="block text-[10px] font-normal text-muted-foreground">Tipe A &gt; 975, selain itu Tipe B</span></td>
+                        <td className="px-3 py-2 text-center font-mono">{preview.combined.umum_total}</td>
+                        <td className="px-3 py-2 text-center font-mono">{preview.combined.teknis_total}</td>
+                        <td className="px-3 py-2 text-center font-mono">{preview.combined.total}</td>
+                        <td className="px-3 py-2 text-center font-mono font-bold text-primary">{preview.combined.final}</td>
+                        <td className="px-3 py-2 text-center"><TipeBadge tipe={preview.combined.tipe} /></td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -119,6 +129,7 @@ export function ReportsPanel({ canManage }) {
                     <div className="text-xs text-muted-foreground mt-0.5">{r.area} · {r.rows.length} urusan · {r.apply_multiplier ? "×1,1" : "tanpa pengali"}</div>
                     <div className="flex flex-wrap gap-1.5 mt-2">
                       {r.rows.map((row) => <TipeBadge key={row.submission_id} tipe={row.tipe} />)}
+                      {r.combined && <span className="text-[10px] text-muted-foreground self-center">Gabungan: <TipeBadge tipe={r.combined.tipe} /></span>}
                     </div>
                   </div>
                 </div>
