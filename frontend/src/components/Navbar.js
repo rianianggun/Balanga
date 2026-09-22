@@ -24,8 +24,8 @@ export function Navbar({ period }) {
             <ShieldCheck className="w-5 h-5 text-primary-foreground" />
           </div>
           <div className="min-w-0">
-            <div className="font-display font-extrabold text-sm sm:text-base leading-tight text-slate-900 truncate">Si-Scoring Kalteng</div>
-            <div className="text-[10px] sm:text-xs text-muted-foreground truncate">Penilaian Tipologi Perangkat Daerah · PP 18/2016</div>
+            <div className="font-display font-extrabold text-sm sm:text-base leading-tight text-slate-900 truncate" data-testid="brand-title">Balanga</div>
+            <div className="text-[10px] sm:text-xs text-muted-foreground truncate">Sistem Penilaian Tipologi Perangkat Daerah</div>
           </div>
         </div>
 

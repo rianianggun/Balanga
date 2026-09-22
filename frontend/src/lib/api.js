@@ -22,14 +22,18 @@ export function formatApiErrorDetail(detail) {
   return String(detail);
 }
 
-export async function openFile(fileId) {
-  const res = await api.get(`/files/${fileId}/download`, { responseType: "blob" });
-  const url = URL.createObjectURL(res.data);
-  window.open(url, "_blank", "noopener");
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+// Bangun URL endpoint file (Excel/PDF) yang membawa token via query string untuk dibuka di tab baru
+export function authUrl(path, params = {}) {
+  const token = localStorage.getItem("token");
+  const qs = new URLSearchParams({ ...Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== "")), auth: token }).toString();
+  return `${API}${path}?${qs}`;
+}
+
+// Buka berkas bukti dukung dalam pop-up pratinjau (tanpa unduh). Ditangani oleh <FilePreviewHost /> di App.
+export function openFile(fileId, name) {
+  window.dispatchEvent(new CustomEvent("balanga:preview", { detail: { fileId, name } }));
 }
 
 export function downloadSurat(submissionId) {
-  const token = localStorage.getItem("token");
-  window.open(`${API}/submissions/${submissionId}/surat-verifikasi?auth=${token}`, "_blank", "noopener");
+  window.open(authUrl(`/submissions/${submissionId}/surat-verifikasi`), "_blank", "noopener");
 }

@@ -1,17 +1,68 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, formatApiErrorDetail, openFile } from "../lib/api";
 import { Navbar } from "../components/Navbar";
 import { StatusPill } from "../components/StatusPill";
 import { SubmissionScoreView } from "../components/SubmissionScoreView";
 import { ReportsPanel } from "../components/ReportsPanel";
+import { RekapPenilaian } from "../components/RekapPenilaian";
+import { BeritaAcaraButtons } from "../components/BeritaAcaraButtons";
 import { ScoreRow } from "../components/ScoreRow";
+import { useTableTools, SearchBox, SortTh, fmtDateTime } from "../components/TableTools";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { toast } from "sonner";
-import { ClipboardCheck, Eye, ArrowLeft, Sparkles, Loader2, Wand2 } from "lucide-react";
+import { ClipboardCheck, Eye, ArrowLeft, Sparkles, Loader2, Wand2, BarChart3 } from "lucide-react";
+
+const KEYS = {
+  device_name: "device_name", area: "area", urusan: (s) => `${s.urusan} ${s.sub_urusan || ""}`, year: "year",
+  total: (s) => s.scoring?.total, verified_at: (s) => s.verification?.verified_at, scored_at: (s) => s.scoring?.scored_at,
+};
+
+function SubmissionTable({ list, action, onOpen, mode }) {
+  const { query, setQuery, sort, toggleSort, rows } = useTableTools(list, KEYS, { key: mode === "done" ? "scored_at" : "verified_at", dir: "desc" });
+  const timeKey = mode === "done" ? "scored_at" : "verified_at";
+  const timeLabel = mode === "done" ? "Waktu Penilaian" : "Waktu Diverifikasi";
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SearchBox value={query} onChange={setQuery} placeholder="Cari perangkat daerah, area, urusan..." className="w-full sm:w-80" testId={`search-${mode}`} />
+        <div className="text-xs text-muted-foreground">{rows.length} dari {list.length} pengajuan</div>
+      </div>
+      <div className="rounded-2xl border border-border bg-white overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr>
+            <SortTh label="Perangkat Daerah" sortKey="device_name" sort={sort} onSort={toggleSort} />
+            <SortTh label="Area" sortKey="area" sort={sort} onSort={toggleSort} />
+            <SortTh label="Urusan" sortKey="urusan" sort={sort} onSort={toggleSort} />
+            <SortTh label="Tahun" sortKey="year" sort={sort} onSort={toggleSort} />
+            <SortTh label={timeLabel} sortKey={timeKey} sort={sort} onSort={toggleSort} />
+            <SortTh label="Hasil" sortKey="total" sort={sort} onSort={toggleSort} />
+            <th className="px-4 py-3 text-right">Aksi</th></tr></thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={7} className="text-center py-12 text-muted-foreground">Tidak ada data.</td></tr>}
+            {rows.map((s) => {
+              const sc = s.scoring;
+              return (
+                <tr key={s.id} data-testid={`score-row-${s.id}`} className="border-t border-border">
+                  <td className="px-4 py-3 font-medium text-slate-800">{s.device_name}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{s.area}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">{s.urusan}{s.sub_urusan ? ` — ${s.sub_urusan}` : ""}</td>
+                  <td className="px-4 py-3">{s.year}</td>
+                  <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap" data-testid={`time-${s.id}`}>{fmtDateTime(mode === "done" ? sc?.scored_at : s.verification?.verified_at)}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{sc ? `${sc.total} (U${sc.umum_total}/T${sc.teknis_total})` : "-"}</td>
+                  <td className="px-4 py-3 text-right"><Button variant="outline" size="sm" className="gap-1.5" data-testid={`assess-btn-${s.id}`} onClick={() => onOpen(s)}><Eye className="w-4 h-4" /> {action}</Button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 export default function PenilaiDashboard() {
   const [subs, setSubs] = useState([]);
@@ -75,7 +126,7 @@ export default function PenilaiDashboard() {
   };
 
   const submitScore = async () => {
-    if (!allScored) return toast.error("Pilih kelas/skor untuk semua indikator");
+    if (!allScored) return toast.error("Pilih skor untuk semua indikator");
     setSaving(true);
     try {
       const items = allInds.map((i) => ({ indicator_id: i.id, ok: rows[i.id].ok, note: rows[i.id].note, data_validasi: rows[i.id].data_validasi, kelas: rows[i.id].kelas || null, score: Number(rows[i.id].score) }));
@@ -86,33 +137,9 @@ export default function PenilaiDashboard() {
   };
 
   const years = [...new Set(subs.map((s) => s.year))].sort((a, b) => b - a);
-  const byYear = (list) => yearFilter === "all" ? list : list.filter((s) => String(s.year) === String(yearFilter));
-  const queue = byYear(subs.filter((s) => s.status === "menunggu_penilaian"));
-  const done = byYear(subs.filter((s) => s.status === "selesai"));
-
-  const Table = ({ list, action }) => (
-    <div className="rounded-2xl border border-border bg-white overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr><th className="px-4 py-3">Perangkat Daerah</th><th className="px-4 py-3">Area</th><th className="px-4 py-3">Urusan</th><th className="px-4 py-3">Tahun</th><th className="px-4 py-3">Hasil</th><th className="px-4 py-3 text-right">Aksi</th></tr></thead>
-        <tbody>
-          {list.length === 0 && <tr><td colSpan={6} className="text-center py-12 text-muted-foreground">Tidak ada data.</td></tr>}
-          {list.map((s) => {
-            const sc = s.scoring;
-            return (
-              <tr key={s.id} data-testid={`score-row-${s.id}`} className="border-t border-border">
-                <td className="px-4 py-3 font-medium text-slate-800">{s.device_name}</td>
-                <td className="px-4 py-3 text-xs text-muted-foreground">{s.area}</td>
-                <td className="px-4 py-3 text-xs text-muted-foreground">{s.urusan}{s.sub_urusan ? ` — ${s.sub_urusan}` : ""}</td>
-                <td className="px-4 py-3">{s.year}</td>
-                <td className="px-4 py-3 font-mono text-xs">{sc ? `${sc.total} (U${sc.umum_total}/T${sc.teknis_total})` : "-"}</td>
-                <td className="px-4 py-3 text-right"><Button variant="outline" size="sm" className="gap-1.5" data-testid={`assess-btn-${s.id}`} onClick={() => openScore(s)}><Eye className="w-4 h-4" /> {action}</Button></td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
+  const byYear = useCallback((list) => yearFilter === "all" ? list : list.filter((s) => String(s.year) === String(yearFilter)), [yearFilter]);
+  const queue = useMemo(() => byYear(subs.filter((s) => s.status === "menunggu_penilaian")), [subs, byYear]);
+  const done = useMemo(() => byYear(subs.filter((s) => s.status === "selesai")), [subs, byYear]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -120,9 +147,13 @@ export default function PenilaiDashboard() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         {!active ? (
           <>
-            <div className="mb-8"><h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 flex items-center gap-2"><ClipboardCheck className="w-7 h-7 text-emerald-600" /> Dashboard Penilai</h1><p className="text-muted-foreground text-sm mt-1">Validasi berkas & pilih kelas skor (a–e) tiap indikator sesuai PP 18/2016, lalu susun Laporan Hasil Penilaian.</p></div>
+            <div className="mb-8"><h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 flex items-center gap-2"><ClipboardCheck className="w-7 h-7 text-emerald-600" /> Dashboard Penilai</h1><p className="text-muted-foreground text-sm mt-1" data-testid="penilai-subtitle">Validasi berkas bukti dukung dan penilaian tipologi perangkat daerah.</p></div>
             <Tabs defaultValue="penilaian">
-              <TabsList><TabsTrigger value="penilaian" data-testid="tab-penilaian">Penilaian</TabsTrigger><TabsTrigger value="laporan" data-testid="tab-laporan">Laporan Hasil</TabsTrigger></TabsList>
+              <TabsList className="flex-wrap h-auto">
+                <TabsTrigger value="penilaian" data-testid="tab-penilaian">Penilaian</TabsTrigger>
+                <TabsTrigger value="rekap" data-testid="tab-rekap" className="gap-1.5"><BarChart3 className="w-4 h-4" /> Rekap Penilaian</TabsTrigger>
+                <TabsTrigger value="laporan" data-testid="tab-laporan">Laporan Hasil</TabsTrigger>
+              </TabsList>
               <TabsContent value="penilaian" className="mt-6">
                 <div className="flex items-center gap-3 mb-4">
                   <Label className="text-xs text-muted-foreground">Filter Tahun</Label>
@@ -130,25 +161,31 @@ export default function PenilaiDashboard() {
                 </div>
                 <Tabs defaultValue="queue">
                   <TabsList><TabsTrigger value="queue" data-testid="tab-queue">Menunggu ({queue.length})</TabsTrigger><TabsTrigger value="done" data-testid="tab-done">Selesai ({done.length})</TabsTrigger></TabsList>
-                  <TabsContent value="queue" className="mt-4"><Table list={queue} action="Validasi & Nilai" /></TabsContent>
-                  <TabsContent value="done" className="mt-4"><Table list={done} action="Lihat Hasil" /></TabsContent>
+                  <TabsContent value="queue" className="mt-4"><SubmissionTable list={queue} mode="queue" action="Validasi & Nilai" onOpen={openScore} /></TabsContent>
+                  <TabsContent value="done" className="mt-4"><SubmissionTable list={done} mode="done" action="Lihat Hasil" onOpen={openScore} /></TabsContent>
                 </Tabs>
               </TabsContent>
+              <TabsContent value="rekap" className="mt-6"><RekapPenilaian periodId={period?.id} /></TabsContent>
               <TabsContent value="laporan" className="mt-6"><ReportsPanel canManage={true} /></TabsContent>
             </Tabs>
           </>
         ) : (
           <div>
             <button data-testid="back-to-list" onClick={() => setActiveId(null)} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-slate-900 mb-4"><ArrowLeft className="w-4 h-4" /> Kembali ke daftar</button>
-            <div className="flex flex-wrap items-start justify-between gap-3 mb-4"><div><h2 className="font-display text-2xl font-extrabold text-slate-900">{active.device_name}</h2><div className="text-sm text-muted-foreground">{active.area} · {active.urusan}{active.sub_urusan ? ` — ${active.sub_urusan}` : ""} · {active.year}</div></div><StatusPill status={active.status} /></div>
-            {active.status === "selesai" ? <SubmissionScoreView submission={active} /> : (
+            <div className="flex flex-wrap items-start justify-between gap-3 mb-4"><div><h2 className="font-display text-2xl font-extrabold text-slate-900">{active.device_name}</h2><div className="text-sm text-muted-foreground">{active.area} · {active.urusan}{active.sub_urusan ? ` — ${active.sub_urusan}` : ""} · {active.year}</div>{active.scoring?.scored_at && <div className="text-xs text-muted-foreground mt-0.5">Dinilai: {fmtDateTime(active.scoring.scored_at)} oleh {active.scoring.penilai_name}</div>}</div><StatusPill status={active.status} /></div>
+            {active.status === "selesai" ? (
+              <div className="space-y-4">
+                <BeritaAcaraButtons submissionId={active.id} />
+                <SubmissionScoreView submission={active} />
+              </div>
+            ) : (
               <div className="space-y-3 max-w-5xl">
                 <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4 flex flex-wrap items-center justify-between gap-3" data-testid="ai-panel">
                   <div className="flex items-start gap-3">
                     <Sparkles className="w-5 h-5 text-violet-700 mt-0.5" />
                     <div>
                       <div className="text-sm font-semibold text-violet-900">Bantuan Penilaian AI (Gemini 3.1 Pro)</div>
-                      <div className="text-xs text-violet-800/80">AI membaca berkas bukti tiap indikator dan merekomendasikan kelas a–e. Rekomendasi bersifat awal — keputusan tetap pada Tim Penilai.</div>
+                      <div className="text-xs text-violet-800/80">AI membaca berkas bukti tiap indikator dan merekomendasikan skor. Rekomendasi bersifat awal — keputusan tetap pada Tim Penilai.</div>
                       {ai && <div className="text-[11px] text-violet-700 mt-1">Terakhir: {new Date(ai.at).toLocaleString("id-ID")} · {ai.items.filter((i) => i.kelas).length}/{ai.items.length} indikator terisi</div>}
                     </div>
                   </div>

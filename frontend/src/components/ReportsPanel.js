@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { api, API, formatApiErrorDetail } from "../lib/api";
+import { api, authUrl, formatApiErrorDetail } from "../lib/api";
 import { AREAS, TIPE_META } from "../lib/constants";
+import { TipeSummary } from "./TipeSummary";
 import { Button } from "./ui/button";
 import { Label } from "./ui/label";
 import { Checkbox } from "./ui/checkbox";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "./ui/select";
 import { toast } from "sonner";
-import { FileSpreadsheet, Download, Trash2, Save, Eye } from "lucide-react";
+import { FileSpreadsheet, Download, Trash2, Save, Eye, FileText, CalendarRange } from "lucide-react";
 
 function TipeBadge({ tipe }) {
   const m = TIPE_META[tipe?.key] || { label: tipe?.label, cls: "" };
@@ -20,6 +21,17 @@ export function ReportsPanel({ canManage }) {
   const [multiplier, setMultiplier] = useState(false);
   const [preview, setPreview] = useState(null);
   const [reports, setReports] = useState([]);
+  const [periods, setPeriods] = useState([]);
+  const [rekapPeriod, setRekapPeriod] = useState("");
+  const [rekapMult, setRekapMult] = useState(false);
+
+  useEffect(() => {
+    api.get("/periods").then((r) => { setPeriods(r.data); const act = r.data.find((p) => p.active) || r.data[0]; if (act) setRekapPeriod(act.id); }).catch(() => {});
+  }, []);
+  const downloadRekap = (format) => {
+    if (!rekapPeriod) return toast.error("Pilih periode");
+    window.open(authUrl("/reports/rekap", { period_id: rekapPeriod, format, pengali: rekapMult ? 1.1 : 1 }), "_blank", "noopener");
+  };
 
   const loadReports = useCallback(async () => setReports((await api.get("/reports")).data), []);
   useEffect(() => {
@@ -43,13 +55,35 @@ export function ReportsPanel({ canManage }) {
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
   const del = async (id) => { await api.delete(`/reports/${id}`); await loadReports(); };
-  const downloadExcel = (id) => {
-    const token = localStorage.getItem("token");
-    window.open(`${API}/reports/${id}/excel?auth=${token}`, "_blank");
-  };
+  const downloadExcel = (id) => window.open(authUrl(`/reports/${id}/excel`), "_blank");
 
   return (
     <div className="space-y-6">
+      <TipeSummary periodId={rekapPeriod || undefined} pengali={rekapMult ? 1.1 : 1} />
+
+      {canManage && (
+        <div className="rounded-2xl border border-primary/30 bg-primary/5 p-5" data-testid="rekap-export-panel">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <div className="font-display font-bold text-slate-900 flex items-center gap-2"><CalendarRange className="w-4 h-4 text-primary" /> Ekspor Rekap Penilaian per Periode</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Seluruh urusan yang selesai dinilai pada periode terpilih, beserta ringkasan Tipe A/B/C.</div>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Periode</Label>
+                <Select value={rekapPeriod} onValueChange={setRekapPeriod}>
+                  <SelectTrigger className="w-64" data-testid="rekap-period-select"><SelectValue placeholder="Pilih periode" /></SelectTrigger>
+                  <SelectContent>{periods.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} ({p.year})</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer pb-2.5 text-xs text-slate-600"><Checkbox checked={rekapMult} onCheckedChange={(v) => setRekapMult(!!v)} data-testid="rekap-export-multiplier" /> Kalikan 1,1</label>
+              <Button variant="outline" className="gap-2 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid="rekap-excel-btn" onClick={() => downloadRekap("xlsx")}><FileSpreadsheet className="w-4 h-4" /> Unduh Excel</Button>
+              <Button variant="outline" className="gap-2 text-red-700 border-red-300 hover:bg-red-50" data-testid="rekap-pdf-btn" onClick={() => downloadRekap("pdf")}><FileText className="w-4 h-4" /> Unduh PDF</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {canManage && (
         <div className="rounded-2xl border border-border bg-white p-5">
           <div className="font-display font-bold text-slate-900 mb-4">Buat Laporan Hasil Penilaian</div>

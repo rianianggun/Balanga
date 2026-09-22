@@ -24,6 +24,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from surat import build_surat_pdf
 from ai_scoring import recommend_scores
 from demo_seed import seed_demo
+from exports import ba_context, build_berita_acara_xlsx, build_berita_acara_pdf, build_rekap_xlsx, build_rekap_pdf
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -73,6 +74,21 @@ def create_access_token(uid):
     return jwt.encode({"sub": uid, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "access"}, get_jwt_secret(), algorithm=JWT_ALGORITHM)
 def set_auth_cookie(response, token):
     response.set_cookie("access_token", token, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+
+PUBLIC_BASE = (os.environ.get("FRONTEND_URL") or "").rstrip("/")
+MIME_BY_EXT = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+               "doc": "application/msword", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+               "xls": "application/vnd.ms-excel", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+def mime_for(filename: str, fallback: str = None):
+    ext = filename.rsplit(".", 1)[-1].lower() if filename and "." in filename else ""
+    return MIME_BY_EXT.get(ext) or fallback or "application/octet-stream"
+
+def file_token(file_id: str) -> str:
+    return jwt.encode({"fid": file_id, "exp": datetime.now(timezone.utc) + timedelta(days=180), "type": "file"}, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+def file_link(file_id: str) -> str:
+    return f"{PUBLIC_BASE}/api/files/{file_id}/download?t={file_token(file_id)}"
 
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
@@ -489,12 +505,16 @@ async def delete_period(pid: str, user: dict = Depends(require_roles("admin"))):
     await db.periods.delete_one({"id": pid})
     return {"message": "Periode dihapus"}
 
-@api_router.get("/notifications")
-async def notifications(user: dict = Depends(get_current_user)):
-    p = await db.periods.find_one({"active": True}, {"_id": 0})
+async def notify_user(user_id: str, level: str, message: str, submission_id: str = None, kind: str = "event"):
+    if not user_id:
+        return
+    await db.notifications.insert_one({"id": str(uuid.uuid4()), "user_id": user_id, "level": level, "message": message,
+                                       "submission_id": submission_id, "kind": kind, "read": False, "created_at": now_iso()})
+
+def period_notices(p):
     out = []
     if not p:
-        return [{"level": "info", "message": "Belum ada periode evaluasi aktif."}]
+        return [{"id": "period-none", "kind": "period", "level": "info", "message": "Belum ada periode evaluasi aktif.", "read": True}]
     today = datetime.now(timezone.utc).date()
     try:
         start = datetime.strptime(p["start_date"], "%Y-%m-%d").date()
@@ -515,7 +535,20 @@ async def notifications(user: dict = Depends(get_current_user)):
             out.append({"level": "info", "message": f"Periode evaluasi '{p['name']}' sedang berlangsung. Batas {p['end_date']} ({d} hari lagi)."})
     else:
         out.append({"level": "warning", "message": f"Periode evaluasi '{p['name']}' telah berakhir ({p['end_date']})."})
+    for i, n in enumerate(out):
+        n.update({"id": f"period-{i}", "kind": "period", "read": True})
     return out
+
+@api_router.get("/notifications")
+async def notifications(user: dict = Depends(get_current_user)):
+    p = await db.periods.find_one({"active": True}, {"_id": 0})
+    events = await db.notifications.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return events + period_notices(p)
+
+@api_router.post("/notifications/read-all")
+async def notifications_read_all(user: dict = Depends(get_current_user)):
+    await db.notifications.update_many({"user_id": user["id"], "read": False}, {"$set": {"read": True}})
+    return {"message": "Semua notifikasi ditandai dibaca"}
 
 # ---------------- Submissions ----------------
 def scope_query(user):
@@ -604,21 +637,40 @@ async def upload_evidence(sid: str, indicator_id: str = Form(...), file: UploadF
         raise HTTPException(status_code=400, detail="Ukuran berkas maksimal 15MB")
     file_id = str(uuid.uuid4())
     path = f"{APP_NAME}/{user['id']}/{sid}/{file_id}.{ext}"
-    result = put_object(path, data, file.content_type or "application/octet-stream")
+    content_type = mime_for(file.filename, file.content_type)
+    result = put_object(path, data, content_type)
     await db.files.insert_one({"id": file_id, "storage_path": result["path"], "original_filename": file.filename,
-                               "content_type": file.content_type, "submission_id": sid, "is_deleted": False, "created_at": now_iso()})
+                               "content_type": content_type, "submission_id": sid, "is_deleted": False, "created_at": now_iso()})
     meta = {"file_id": file_id, "original_filename": file.filename, "uploaded_at": now_iso()}
-    await db.submissions.update_one({"id": sid}, {"$set": {f"uploads.{indicator_id}": meta, "updated_at": now_iso()}})
+    await db.submissions.update_one({"id": sid}, {"$set": {f"uploads.{indicator_id}": meta, "updated_at": now_iso(), "last_upload_at": now_iso()}})
     return meta
 
 @api_router.get("/files/{file_id}/download")
-async def download_file(file_id: str, user: dict = Depends(get_current_user)):
+async def download_file(file_id: str, request: Request, t: str = Query(None)):
     from fastapi import Response as FResponse
+    if t:
+        try:
+            payload = jwt.decode(t, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+            if payload.get("type") != "file" or payload.get("fid") != file_id:
+                raise HTTPException(status_code=401, detail="Token berkas tidak valid")
+        except jwt.InvalidTokenError:
+            raise HTTPException(status_code=401, detail="Token berkas tidak valid / kedaluwarsa")
+    else:
+        await get_current_user(request)
     record = await db.files.find_one({"id": file_id, "is_deleted": False})
     if not record: raise HTTPException(status_code=404, detail="Berkas tidak ditemukan")
     data, ct = get_object(record["storage_path"])
-    return FResponse(content=data, media_type=record.get("content_type") or ct,
-                     headers={"Content-Disposition": f'inline; filename="{record["original_filename"]}"'})
+    media = mime_for(record.get("original_filename"), record.get("content_type") or ct)
+    return FResponse(content=data, media_type=media,
+                     headers={"Content-Disposition": f'inline; filename="{record["original_filename"]}"', "X-Content-Type-Options": "nosniff"})
+
+@api_router.get("/files/{file_id}/meta")
+async def file_meta(file_id: str, user: dict = Depends(get_current_user)):
+    record = await db.files.find_one({"id": file_id, "is_deleted": False}, {"_id": 0, "storage_path": 0})
+    if not record: raise HTTPException(status_code=404, detail="Berkas tidak ditemukan")
+    record["content_type"] = mime_for(record.get("original_filename"), record.get("content_type"))
+    record["url"] = file_link(file_id)
+    return record
 
 @api_router.delete("/submissions/{sid}/upload/{indicator_id}")
 async def delete_upload(sid: str, indicator_id: str, user: dict = Depends(require_roles("perangkat"))):
@@ -667,6 +719,7 @@ async def verify_submission(sid: str, input: VerifyInput, user: dict = Depends(r
             "verification": {"verifikator_id": user["id"], "verifikator_name": user["name"], "notes": input.notes, "verified_at": now_iso(), "acknowledged": True},
             "updated_at": now_iso(), "history": hist}})
         await add_audit(sid, "Verifikasi disetujui", user, input.notes or "")
+        await notify_user(s["perangkat_user_id"], "success", f"Pengajuan {s['device_name']} — {s['urusan']} telah DIVERIFIKASI oleh {user['name']} dan diteruskan ke Tim Penilai.", sid)
         return {"message": "Terverifikasi, diteruskan ke penilai"}
     elif input.action == "reject":
         if not input.notes: raise HTTPException(status_code=400, detail="Catatan perbaikan wajib diisi saat menolak")
@@ -675,6 +728,7 @@ async def verify_submission(sid: str, input: VerifyInput, user: dict = Depends(r
             "verification": {"verifikator_id": user["id"], "verifikator_name": user["name"], "notes": input.notes, "verified_at": now_iso()},
             "updated_at": now_iso(), "history": hist}})
         await add_audit(sid, "Dikembalikan untuk perbaikan", user, input.notes)
+        await notify_user(s["perangkat_user_id"], "warning", f"Pengajuan {s['device_name']} — {s['urusan']} DIKEMBALIKAN oleh verifikator {user['name']}. Catatan: {input.notes}", sid)
         return {"message": "Dikembalikan ke perangkat untuk perbaikan"}
     raise HTTPException(status_code=400, detail="Aksi tidak valid")
 
@@ -704,6 +758,29 @@ async def surat_verifikasi(sid: str, auth: str = Query(None), authorization: str
     fname = f"Surat_Keterangan_Verifikasi_{s['device_name'].replace(' ', '_')}.pdf"
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",
                              headers={"Content-Disposition": f'inline; filename="{fname}"'})
+
+@api_router.get("/submissions/{sid}/berita-acara")
+async def berita_acara(sid: str, format: str = Query("xlsx"), pengali: float = Query(1.0), auth: str = Query(None), authorization: str = Header(None)):
+    u = await user_from_token(auth, authorization)
+    s = await db.submissions.find_one({"id": sid}, {"_id": 0})
+    if not s: raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if u["role"] == "perangkat" and s["perangkat_user_id"] != u["id"]:
+        raise HTTPException(status_code=403, detail="Akses ditolak")
+    if u["role"] == "verifikator" and s["area"] != u.get("area"):
+        raise HTTPException(status_code=403, detail="Akses ditolak (area berbeda)")
+    if s["status"] != "selesai" or not s.get("scoring"):
+        raise HTTPException(status_code=400, detail="Pengajuan belum selesai dinilai")
+    if pengali not in (1.0, 1.1):
+        raise HTTPException(status_code=400, detail="Pengali harus 1 atau 1,1")
+    req_ids, umum, teknis = await required_indicator_ids(s)
+    ctx = ba_context(s, umum, teknis, pengali, file_link)
+    base = f"Berita_Acara_{s['device_name'].replace(' ', '_')}_{_norm(s['urusan']).replace(' ', '_')}"
+    if format == "pdf":
+        return StreamingResponse(io.BytesIO(build_berita_acara_pdf(ctx)), media_type="application/pdf",
+                                 headers={"Content-Disposition": f'inline; filename="{base}.pdf"'})
+    return StreamingResponse(io.BytesIO(build_berita_acara_xlsx(ctx)),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{base}.xlsx"'})
 
 @api_router.post("/submissions/{sid}/ai-recommend")
 async def ai_recommend(sid: str, user: dict = Depends(require_roles("penilai"))):
@@ -762,6 +839,8 @@ async def score_submission(sid: str, input: ScoreInput, user: dict = Depends(req
     hist = s.get("history", []); hist.append({"status": "selesai", "at": now_iso(), "by": user["name"]})
     await db.submissions.update_one({"id": sid}, {"$set": {"status": "selesai", "scoring": scoring, "updated_at": now_iso(), "history": hist}})
     await add_audit(sid, "Penilaian selesai", user, f"Umum {umum_total} / Teknis {teknis_total} / Total {scoring['total']}")
+    tipe = tipe_from_score(scoring["total"], s["urusan"])
+    await notify_user(s["perangkat_user_id"], "success", f"Penilaian {s['device_name']} — {s['urusan']} telah SELESAI. Total skor {scoring['total']} ({tipe['label']}).", sid)
     return {"message": "Penilaian selesai", "scoring": scoring}
 
 # ---------------- Reports ----------------
@@ -897,6 +976,117 @@ async def stats_by_area(user: dict = Depends(require_roles("admin", "penilai")))
     for s in subs:
         by_area.setdefault(s["area"], []).append(sub_total(s.get("scoring")))
     return [{"area": a, "avg_total": round(sum(v) / len(v), 2), "count": len(v)} for a, v in by_area.items()]
+
+def tipe_bucket(t):
+    return t["key"] if t and t.get("key") in ("A", "B", "C") else "Lainnya"
+
+async def device_tipes(period_id: str = None, pengali: float = 1.0, area: str = None):
+    """Aggregate completed submissions per (area, perangkat daerah) -> final score & tipe."""
+    q = {"status": "selesai"}
+    if period_id: q["period_id"] = period_id
+    if area: q["area"] = area
+    subs = await db.submissions.find(q, {"_id": 0}).to_list(5000)
+    groups = {}
+    for s in subs:
+        groups.setdefault((s["area"], s["device_name"]), []).append(s)
+    out = []
+    for (ar, dev), items in groups.items():
+        rows = []
+        for s in items:
+            sc = s.get("scoring") or {}
+            rows.append({"submission_id": s["id"], "urusan": s["urusan"], "sub_urusan": s.get("sub_urusan"),
+                         "umum_total": sc.get("umum_total", 0), "teknis_total": sc.get("teknis_total", 0), "total": sub_total(sc),
+                         "scored_at": sc.get("scored_at"), "penilai_name": sc.get("penilai_name")})
+        combined = finalize_rows(rows, pengali == 1.1)
+        if combined:
+            total, final, tipe = combined["total"], combined["final"], combined["tipe"]
+        else:
+            total, final, tipe = rows[0]["total"], rows[0]["final"], rows[0]["tipe"]
+        out.append({"area": ar, "level": AREA_LEVEL.get(ar), "device_name": dev, "urusan_count": len(rows),
+                    "urusan": [r["urusan"] + (f" — {r['sub_urusan']}" if r.get("sub_urusan") else "") for r in rows],
+                    "umum_total": rows[0]["umum_total"], "teknis_total": round(sum(r["teknis_total"] for r in rows), 2),
+                    "total": total, "final": final, "tipe": tipe, "tipe_bucket": tipe_bucket(tipe),
+                    "scored_at": max((r.get("scored_at") or "") for r in rows) or None, "rows": rows})
+    out.sort(key=lambda x: (-x["final"], x["device_name"]))
+    for i, d in enumerate(out, start=1):
+        d["rank"] = i
+    return out
+
+@api_router.get("/stats/tipe-summary")
+async def stats_tipe_summary(period_id: Optional[str] = None, pengali: float = 1.0, user: dict = Depends(get_current_user)):
+    devs = await device_tipes(period_id, pengali)
+    counts = {"A": 0, "B": 0, "C": 0, "Lainnya": 0}
+    for d in devs:
+        counts[d["tipe_bucket"]] += 1
+    ranking = [{k: v for k, v in d.items() if k != "rows"} for d in devs]
+    return {"counts": counts, "total_devices": len(devs), "ranking": ranking, "pengali": pengali}
+
+@api_router.get("/stats/tipe-by-area")
+async def stats_tipe_by_area(period_id: Optional[str] = None, pengali: float = 1.0, user: dict = Depends(require_roles("admin", "penilai"))):
+    devs = await device_tipes(period_id, pengali)
+    by = {}
+    for d in devs:
+        b = by.setdefault(d["area"], {"area": d["area"], "level": d["level"], "A": 0, "B": 0, "C": 0, "Lainnya": 0, "total": 0})
+        b[d["tipe_bucket"]] += 1; b["total"] += 1
+    order = {a["name"]: i for i, a in enumerate(AREAS)}
+    return sorted(by.values(), key=lambda x: order.get(x["area"], 99))
+
+@api_router.get("/stats/rekap-penilaian")
+async def stats_rekap_penilaian(period_id: Optional[str] = None, pengali: float = 1.0, user: dict = Depends(require_roles("admin", "penilai"))):
+    devs = await device_tipes(period_id, pengali)
+    q = {"status": {"$in": ["menunggu_verifikasi", "ditolak", "menunggu_penilaian", "selesai"]}}
+    if period_id: q["period_id"] = period_id
+    subs = await db.submissions.find(q, {"_id": 0, "area": 1, "status": 1, "device_name": 1}).to_list(5000)
+    areas = {}
+    for a in AREAS:
+        areas[a["name"]] = {"area": a["name"], "level": a["level"], "selesai": 0, "menunggu_penilaian": 0, "menunggu_verifikasi": 0, "ditolak": 0,
+                            "devices_total": 0, "devices": [], "counts": {"A": 0, "B": 0, "C": 0, "Lainnya": 0}}
+    dev_seen = set()
+    for s in subs:
+        a = areas.setdefault(s["area"], {"area": s["area"], "level": AREA_LEVEL.get(s["area"]), "selesai": 0, "menunggu_penilaian": 0, "menunggu_verifikasi": 0, "ditolak": 0,
+                                         "devices_total": 0, "devices": [], "counts": {"A": 0, "B": 0, "C": 0, "Lainnya": 0}})
+        a[s["status"]] = a.get(s["status"], 0) + 1
+        if (s["area"], s["device_name"]) not in dev_seen:
+            dev_seen.add((s["area"], s["device_name"])); a["devices_total"] += 1
+    for d in devs:
+        a = areas[d["area"]]
+        a["devices"].append({k: v for k, v in d.items() if k != "rows"})
+        a["counts"][d["tipe_bucket"]] += 1
+    for a in areas.values():
+        a["devices"].sort(key=lambda x: -x["final"])
+        a["progress"] = round(a["selesai"] / (a["selesai"] + a["menunggu_penilaian"]) * 100) if (a["selesai"] + a["menunggu_penilaian"]) else 0
+        a["status"] = "belum_ada" if not (a["selesai"] + a["menunggu_penilaian"]) else ("selesai" if a["menunggu_penilaian"] == 0 else "berjalan")
+    return list(areas.values())
+
+@api_router.get("/reports/rekap")
+async def report_rekap(period_id: Optional[str] = None, format: str = Query("xlsx"), pengali: float = Query(1.0),
+                       auth: str = Query(None), authorization: str = Header(None)):
+    u = await user_from_token(auth, authorization)
+    if u["role"] not in ("admin", "penilai"):
+        raise HTTPException(status_code=403, detail="Akses ditolak untuk peran ini")
+    if pengali not in (1.0, 1.1):
+        raise HTTPException(status_code=400, detail="Pengali harus 1 atau 1,1")
+    period = await db.periods.find_one({"id": period_id}, {"_id": 0}) if period_id else await db.periods.find_one({"active": True}, {"_id": 0})
+    if not period: raise HTTPException(status_code=404, detail="Periode tidak ditemukan")
+    devs = await device_tipes(period["id"], pengali)
+    rows = []
+    for d in devs:
+        for r in d["rows"]:
+            r_final = round(r["total"] * pengali, 2) if pengali == 1.1 else r["total"]
+            rows.append({"area": d["area"], "device_name": d["device_name"], "urusan": r["urusan"], "sub_urusan": r.get("sub_urusan"),
+                         "umum_total": r["umum_total"], "teknis_total": r["teknis_total"], "total": r["total"], "final": r_final,
+                         "tipe_label": (d["tipe"]["label"] + (f" (gabungan {d['urusan_count']} urusan)" if d["urusan_count"] > 1 else "")),
+                         "scored_at": r.get("scored_at"), "penilai_name": r.get("penilai_name")})
+    summary = {"A": 0, "B": 0, "C": 0, "Lainnya": 0}
+    for d in devs:
+        summary[d["tipe_bucket"]] += 1
+    base = f"Rekap_Penilaian_{period.get('year', '')}"
+    if format == "pdf":
+        return StreamingResponse(io.BytesIO(build_rekap_pdf(period, rows, pengali, summary)), media_type="application/pdf",
+                                 headers={"Content-Disposition": f'inline; filename="{base}.pdf"'})
+    return StreamingResponse(io.BytesIO(build_rekap_xlsx(period, rows, pengali, summary)),
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{base}.xlsx"'})
 
 @api_router.get("/audit")
 async def audit_feed(user: dict = Depends(require_roles("admin"))):

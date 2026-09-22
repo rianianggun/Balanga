@@ -41,7 +41,7 @@ export function SubmissionScoreView({ submission }) {
                   <td className="px-3 py-2 text-muted-foreground text-xs">{v.data_validasi || "-"}</td>
                   <td className="px-3 py-2 text-center font-semibold uppercase text-slate-700">{v.kelas || "-"}</td>
                   <td className="px-3 py-2 text-center font-mono font-semibold text-primary">{v.score}</td>
-                  <td className="px-3 py-2">{up && <button className="text-emerald-700 hover:underline text-xs inline-flex items-center gap-1" onClick={() => openFile(up.file_id)}><FileText className="w-3.5 h-3.5" />Lihat</button>}</td>
+                  <td className="px-3 py-2">{up && <button className="text-emerald-700 hover:underline text-xs inline-flex items-center gap-1" onClick={() => openFile(up.file_id, up.original_filename)}><FileText className="w-3.5 h-3.5" />Lihat</button>}</td>
                 </tr>
               );
             })}

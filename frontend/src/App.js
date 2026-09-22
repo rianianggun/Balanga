@@ -10,6 +10,7 @@ import VerifikatorDashboard from "./pages/VerifikatorDashboard";
 import PenilaiDashboard from "./pages/PenilaiDashboard";
 import VerifikatorReviewPage from "./pages/VerifikatorReviewPage";
 import { Toaster } from "./components/ui/sonner";
+import { FilePreviewHost } from "./components/FilePreviewHost";
 
 function Dashboard() {
   const { user } = useAuth();
@@ -28,7 +29,7 @@ function VerifikasiRoute() {
 
 function App() {
   useEffect(() => {
-    document.title = "Si-Scoring Kalteng";
+    document.title = "Balanga";
   }, []);
   return (
     <div className="App">
@@ -55,6 +56,7 @@ function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <Toaster position="top-right" richColors />
+          <FilePreviewHost />
         </BrowserRouter>
       </AuthProvider>
     </div>

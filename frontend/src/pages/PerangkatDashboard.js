@@ -1,10 +1,12 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { api, formatApiErrorDetail, openFile, downloadSurat } from "../lib/api";
 import { Navbar } from "../components/Navbar";
 import { StatusPill } from "../components/StatusPill";
 import { StatusStepper } from "../components/StatusStepper";
 import { SubmissionScoreView } from "../components/SubmissionScoreView";
 import { ReportsPanel } from "../components/ReportsPanel";
+import { BeritaAcaraButtons } from "../components/BeritaAcaraButtons";
+import { useTableTools, SearchBox, SortTh, fmtDateTime, lastUploadAt } from "../components/TableTools";
 import { URUSAN, SUB_URUSAN } from "../lib/constants";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -79,7 +81,8 @@ export default function PerangkatDashboard() {
   };
 
   const years = [...new Set(subs.map((s) => s.year))].sort((a, b) => b - a);
-  const filtered = yearFilter === "all" ? subs : subs.filter((s) => String(s.year) === String(yearFilter));
+  const filtered = useMemo(() => yearFilter === "all" ? subs : subs.filter((s) => String(s.year) === String(yearFilter)), [subs, yearFilter]);
+  const { query, setQuery, sort, toggleSort, rows } = useTableTools(filtered, TABLE_KEYS, { key: "uploaded_at", dir: "desc" });
 
   const UploadRow = ({ ind }) => {
     const up = (active.uploads || {})[ind.id];
@@ -87,11 +90,11 @@ export default function PerangkatDashboard() {
       <div className="rounded-lg border border-border p-3 flex items-center justify-between gap-3 bg-white">
         <div className="min-w-0">
           <div className="text-sm font-medium text-slate-800">{ind.order}. {ind.name}</div>
-          {up ? <button className="text-xs text-emerald-700 hover:underline flex items-center gap-1 mt-0.5" onClick={() => openFile(up.file_id)}><CheckCircle2 className="w-3 h-3" /> {up.original_filename}</button>
+          {up ? <button className="text-xs text-emerald-700 hover:underline flex items-center gap-1 mt-0.5" onClick={() => openFile(up.file_id, up.original_filename)}><CheckCircle2 className="w-3 h-3" /> {up.original_filename}<span className="text-muted-foreground no-underline ml-1">· {fmtDateTime(up.uploaded_at)}</span></button>
             : <div className="text-xs text-muted-foreground mt-0.5">Belum diunggah</div>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {up && <Button variant="ghost" size="icon" onClick={() => openFile(up.file_id)}><Eye className="w-4 h-4" /></Button>}
+          {up && <Button variant="ghost" size="icon" data-testid={`view-upload-${ind.id}`} onClick={() => openFile(up.file_id, up.original_filename)}><Eye className="w-4 h-4" /></Button>}
           {editable && (
             <>
               <label>
@@ -161,16 +164,27 @@ export default function PerangkatDashboard() {
                     <SelectContent><SelectItem value="all">Semua Tahun</SelectItem>{years.map((y) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <SearchBox value={query} onChange={setQuery} placeholder="Cari perangkat daerah, urusan, status..." className="w-full sm:w-80" testId="search-pengajuan" />
+                  <div className="text-xs text-muted-foreground">{rows.length} dari {filtered.length} pengajuan</div>
+                </div>
                 <div className="rounded-2xl border border-border bg-white overflow-x-auto">
                   <table className="w-full text-sm">
-                    <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr><th className="px-4 py-3">Perangkat Daerah</th><th className="px-4 py-3">Urusan</th><th className="px-4 py-3">Tahun</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">Aksi</th></tr></thead>
+                    <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr>
+                      <SortTh label="Perangkat Daerah" sortKey="device_name" sort={sort} onSort={toggleSort} />
+                      <SortTh label="Urusan" sortKey="urusan" sort={sort} onSort={toggleSort} />
+                      <SortTh label="Tahun" sortKey="year" sort={sort} onSort={toggleSort} />
+                      <SortTh label="Waktu Unggah Terakhir" sortKey="uploaded_at" sort={sort} onSort={toggleSort} />
+                      <SortTh label="Status" sortKey="status" sort={sort} onSort={toggleSort} />
+                      <th className="px-4 py-3 text-right">Aksi</th></tr></thead>
                     <tbody>
-                      {filtered.length === 0 && <tr><td colSpan={5} className="text-center py-12 text-muted-foreground">Belum ada pengajuan.</td></tr>}
-                      {filtered.map((s) => (
+                      {rows.length === 0 && <tr><td colSpan={6} className="text-center py-12 text-muted-foreground">{filtered.length === 0 ? "Belum ada pengajuan." : "Tidak ada yang cocok."}</td></tr>}
+                      {rows.map((s) => (
                         <tr key={s.id} data-testid={`submission-row-${s.id}`} className="border-t border-border">
                           <td className="px-4 py-3 font-medium text-slate-800">{s.device_name}</td>
                           <td className="px-4 py-3 text-muted-foreground text-xs">{s.urusan}{s.sub_urusan ? ` — ${s.sub_urusan}` : ""}</td>
                           <td className="px-4 py-3">{s.year}</td>
+                          <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap" data-testid={`upload-time-${s.id}`}>{fmtDateTime(lastUploadAt(s))}</td>
                           <td className="px-4 py-3"><StatusPill status={s.status} /></td>
                           <td className="px-4 py-3 text-right"><Button variant="outline" size="sm" className="gap-1.5" data-testid={`open-submission-${s.id}`} onClick={() => openDetail(s)}><Eye className="w-4 h-4" /> {s.status === "selesai" ? "Hasil" : editableStatus(s) ? "Kelola" : "Detail"}</Button></td>
                         </tr>
@@ -200,7 +214,7 @@ export default function PerangkatDashboard() {
               <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700 mb-4 max-w-3xl"><div className="font-semibold flex items-center gap-1.5"><AlertTriangle className="w-4 h-4" /> Perbaikan diperlukan</div><p className="mt-1">{active.rejection_note}</p><p className="mt-1 text-xs">Hapus & unggah ulang berkas terkait, lalu kirim kembali.</p></div>
             )}
 
-            {active.status === "selesai" && active.scoring ? <SubmissionScoreView submission={active} /> : (
+            {active.status === "selesai" && active.scoring ? <div className="space-y-4"><BeritaAcaraButtons submissionId={active.id} /><SubmissionScoreView submission={active} /></div> : (
               <div className="space-y-3 max-w-3xl">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Layers className="w-4 h-4 text-accent" /> Faktor Umum (unggah sekali)</div>
                 {detailIndicators.umum.map((ind) => <UploadRow key={ind.id} ind={ind} />)}
@@ -229,3 +243,5 @@ export default function PerangkatDashboard() {
 }
 
 function editableStatus(s) { return s.status === "draft" || s.status === "ditolak"; }
+const TABLE_KEYS = { device_name: "device_name", urusan: (s) => `${s.urusan} ${s.sub_urusan || ""}`, year: "year", uploaded_at: (s) => lastUploadAt(s), status: (s) => STATUS_LABEL[s.status] || s.status };
+const STATUS_LABEL = { draft: "Draf", menunggu_verifikasi: "Menunggu Verifikasi", ditolak: "Dikembalikan Perbaikan", menunggu_penilaian: "Menunggu Penilaian", selesai: "Selesai Dinilai" };

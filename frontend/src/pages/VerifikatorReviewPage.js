@@ -120,6 +120,7 @@ export default function VerifikatorReviewPage() {
 }
 
 function FileGroup({ title, icon, list, s }) {
+  const fmt = (d) => d ? new Date(d).toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
   return (
     <div>
       <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 mb-2">{icon} {title}</div>
@@ -131,9 +132,9 @@ function FileGroup({ title, icon, list, s }) {
             <div key={ind.id} className="px-4 py-3 flex items-center justify-between gap-4" data-testid={`verif-file-row-${ind.id}`}>
               <div className="min-w-0">
                 <div className="text-sm font-medium text-slate-800"><span className="text-muted-foreground mr-1">{ind.order}.</span>{ind.name}</div>
-                {up ? <div className="text-xs text-muted-foreground mt-0.5 truncate">{up.original_filename}</div> : <div className="text-xs text-red-600 mt-0.5">Berkas tidak ada</div>}
+                {up ? <div className="text-xs text-muted-foreground mt-0.5 truncate">{up.original_filename} · diunggah {fmt(up.uploaded_at)}</div> : <div className="text-xs text-red-600 mt-0.5">Berkas tidak ada</div>}
               </div>
-              {up && <Button variant="outline" size="sm" className="gap-1.5 shrink-0 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid={`view-file-${ind.id}`} onClick={() => openFile(up.file_id)}><FileText className="w-4 h-4" /> Buka Berkas <ExternalLink className="w-3 h-3" /></Button>}
+              {up && <Button variant="outline" size="sm" className="gap-1.5 shrink-0 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid={`view-file-${ind.id}`} onClick={() => openFile(up.file_id, up.original_filename)}><FileText className="w-4 h-4" /> Buka Berkas <ExternalLink className="w-3 h-3" /></Button>}
             </div>
           );
         })}

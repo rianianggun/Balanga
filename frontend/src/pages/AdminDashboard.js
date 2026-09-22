@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { api, formatApiErrorDetail } from "../lib/api";
+import { api, authUrl, formatApiErrorDetail } from "../lib/api";
+import { useTableTools, SearchBox, SortTh } from "../components/TableTools";
+import { TipeSummary } from "../components/TipeSummary";
 import { Navbar } from "../components/Navbar";
 import { AREAS, ROLE_META, URUSAN, SUB_URUSAN } from "../lib/constants";
 import { Button } from "../components/ui/button";
@@ -12,7 +14,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from ".
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { toast } from "sonner";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line, Legend } from "recharts";
-import { Users, ListChecks, CalendarRange, LayoutDashboard, Plus, Pencil, Trash2, KeyRound, Lock, Unlock, History, Upload, Loader2 } from "lucide-react";
+import { Users, ListChecks, CalendarRange, LayoutDashboard, Plus, Pencil, Trash2, KeyRound, Lock, Unlock, History, Upload, Loader2, FileSpreadsheet, FileText } from "lucide-react";
 
 export default function AdminDashboard() {
   const [period, setPeriod] = useState(null);
@@ -47,12 +49,22 @@ function Overview() {
   const [stats, setStats] = useState({ counts: {} });
   const [yearly, setYearly] = useState([]);
   const [byArea, setByArea] = useState([]);
+  const [tipeArea, setTipeArea] = useState([]);
+  const [periods, setPeriods] = useState([]);
+  const [periodId, setPeriodId] = useState("");
+  const [mult, setMult] = useState(false);
   useEffect(() => {
     (async () => {
-      const [s, y, a] = await Promise.all([api.get("/stats/overview"), api.get("/stats/yearly"), api.get("/stats/by-area")]);
-      setStats(s.data); setYearly(y.data); setByArea(a.data);
+      const [s, y, a, p] = await Promise.all([api.get("/stats/overview"), api.get("/stats/yearly"), api.get("/stats/by-area"), api.get("/periods")]);
+      setStats(s.data); setYearly(y.data); setByArea(a.data); setPeriods(p.data);
+      const act = p.data.find((x) => x.active) || p.data[0]; if (act) setPeriodId(act.id);
     })();
   }, []);
+  useEffect(() => {
+    api.get("/stats/tipe-by-area", { params: { period_id: periodId || undefined, pengali: mult ? 1.1 : 1 } }).then((r) => setTipeArea(r.data)).catch(() => {});
+  }, [periodId, mult]);
+  const shortArea = (a) => a.replace("Kabupaten ", "Kab. ").replace("Provinsi ", "Prov. ");
+  const downloadRekap = (format) => window.open(authUrl("/reports/rekap", { period_id: periodId, format, pengali: mult ? 1.1 : 1 }), "_blank", "noopener");
   const c = stats.counts || {};
   const cards = [
     { label: "Pengguna", value: stats.users || 0 }, { label: "Total Pengajuan", value: c.total || 0 },
@@ -63,6 +75,33 @@ function Overview() {
     <div className="space-y-6">
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {cards.map((x) => <div key={x.label} className="rounded-2xl border border-border bg-white p-4"><div className="text-3xl font-display font-extrabold text-slate-900">{x.value}</div><div className="text-xs text-muted-foreground mt-1">{x.label}</div></div>)}
+      </div>
+      <div className="rounded-2xl border border-border bg-white p-5 flex flex-wrap items-end justify-between gap-3" data-testid="admin-period-controls">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1.5"><Label className="text-xs">Periode</Label>
+            <Select value={periodId} onValueChange={setPeriodId}><SelectTrigger className="w-64" data-testid="admin-period-select"><SelectValue placeholder="Pilih periode" /></SelectTrigger>
+              <SelectContent>{periods.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} ({p.year})</SelectItem>)}</SelectContent></Select></div>
+          <label className="flex items-center gap-2 cursor-pointer pb-2.5 text-xs text-slate-600"><Switch checked={mult} onCheckedChange={setMult} data-testid="admin-multiplier-switch" /> Kalikan 1,1</label>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" className="gap-2 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid="admin-rekap-excel" onClick={() => downloadRekap("xlsx")}><FileSpreadsheet className="w-4 h-4" /> Rekap Excel</Button>
+          <Button variant="outline" className="gap-2 text-red-700 border-red-300 hover:bg-red-50" data-testid="admin-rekap-pdf" onClick={() => downloadRekap("pdf")}><FileText className="w-4 h-4" /> Rekap PDF</Button>
+        </div>
+      </div>
+      <TipeSummary periodId={periodId || undefined} pengali={mult ? 1.1 : 1} />
+      <div className="rounded-2xl border border-border bg-white p-5" data-testid="tipe-by-area-chart">
+        <div className="text-sm font-semibold text-slate-900">Sebaran Tipe A/B/C per Kabupaten/Kota</div>
+        <div className="text-xs text-muted-foreground mb-4">Jumlah perangkat daerah per tipe di setiap daerah</div>
+        {tipeArea.length === 0 ? <Empty /> : (
+          <ResponsiveContainer width="100%" height={Math.max(240, tipeArea.length * 40)}>
+            <BarChart data={tipeArea.map((t) => ({ ...t, area: shortArea(t.area) }))} layout="vertical" margin={{ left: 30, right: 24 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" horizontal={false} />
+              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="area" width={130} tick={{ fontSize: 11 }} />
+              <Tooltip /><Legend wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="A" name="Tipe A" stackId="t" fill="#0d9488" /><Bar dataKey="B" name="Tipe B" stackId="t" fill="#34d399" /><Bar dataKey="C" name="Tipe C" stackId="t" fill="#d97706" /><Bar dataKey="Lainnya" name="Lainnya" stackId="t" fill="#94a3b8" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-2xl border border-border bg-white p-5">
@@ -82,6 +121,7 @@ function Overview() {
   );
 }
 const Empty = () => <div className="text-center py-16 text-sm text-muted-foreground">Belum ada data selesai dinilai.</div>;
+const USER_KEYS = { name: "name", email: "email", role: (u) => ROLE_META[u.role]?.label || u.role, area: "area" };
 
 function UsersTab() {
   const [users, setUsers] = useState([]);
@@ -105,15 +145,23 @@ function UsersTab() {
   const del = async (u) => { if (!window.confirm(`Hapus ${u.name}?`)) return; try { await api.delete(`/users/${u.id}`); toast.success("Dihapus"); await load(); } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); } };
   const toggleActive = async (u) => { await api.put(`/users/${u.id}`, { active: !u.active }); await load(); };
   const resetPw = async () => { if (!newPw) return toast.error("Isi kata sandi"); await api.post(`/users/${pwUser.id}/reset-password`, { password: newPw }); toast.success("Diperbarui"); setPwUser(null); setNewPw(""); };
+  const { query, setQuery, sort, toggleSort, rows } = useTableTools(users, USER_KEYS, { key: "name", dir: "asc" });
 
   return (
     <div>
-      <div className="flex justify-end mb-4"><Button className="gap-2" data-testid="add-user-btn" onClick={() => { setEditing(null); setForm(empty); setOpen(true); }}><Plus className="w-4 h-4" /> Tambah Pengguna</Button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <SearchBox value={query} onChange={setQuery} placeholder="Cari nama, email, peran, area..." className="w-full sm:w-80" testId="search-users" />
+        <Button className="gap-2" data-testid="add-user-btn" onClick={() => { setEditing(null); setForm(empty); setOpen(true); }}><Plus className="w-4 h-4" /> Tambah Pengguna</Button>
+      </div>
       <div className="rounded-2xl border border-border bg-white overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr><th className="px-4 py-3">Nama</th><th className="px-4 py-3">Email</th><th className="px-4 py-3">Peran</th><th className="px-4 py-3">Area</th><th className="px-4 py-3 text-center">Aktif</th><th className="px-4 py-3 text-right">Aksi</th></tr></thead>
+          <thead className="bg-muted/50 text-left text-xs text-muted-foreground"><tr>
+            <SortTh label="Nama" sortKey="name" sort={sort} onSort={toggleSort} /><SortTh label="Email" sortKey="email" sort={sort} onSort={toggleSort} />
+            <SortTh label="Peran" sortKey="role" sort={sort} onSort={toggleSort} /><SortTh label="Area" sortKey="area" sort={sort} onSort={toggleSort} />
+            <th className="px-4 py-3 text-center">Aktif</th><th className="px-4 py-3 text-right">Aksi</th></tr></thead>
           <tbody>
-            {users.map((u) => (
+            {rows.length === 0 && <tr><td colSpan={6} className="text-center py-10 text-muted-foreground">Tidak ada pengguna yang cocok.</td></tr>}
+            {rows.map((u) => (
               <tr key={u.id} data-testid={`user-row-${u.id}`} className="border-t border-border">
                 <td className="px-4 py-3 font-medium text-slate-800">{u.name}</td>
                 <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
