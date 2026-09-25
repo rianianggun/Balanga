@@ -80,7 +80,7 @@ export default function VerifikatorReviewPage() {
                     {s.verification.notes && <div className="text-xs text-emerald-700 mt-1 italic">"{s.verification.notes}"</div>}
                   </div>
                 </div>
-                <Button className="gap-2 bg-emerald-700 hover:bg-emerald-800" data-testid="download-surat-btn" onClick={() => downloadSurat(s.id)}><FileBadge className="w-4 h-4" /> Unduh Surat Keterangan (PDF + QR)</Button>
+                <Button className="gap-2" data-testid="download-surat-btn" onClick={() => downloadSurat(s.id)}><FileBadge className="w-4 h-4" /> Unduh Surat Keterangan (PDF + QR)</Button>
               </div>
             )}
 
@@ -99,7 +99,7 @@ export default function VerifikatorReviewPage() {
                 <div className="flex flex-col sm:flex-row gap-3">
                   {!rejectMode ? (
                     <>
-                      <Button className="flex-1 gap-2 h-11 bg-emerald-600 hover:bg-emerald-700" data-testid="verify-approve-btn" disabled={!ack || busy} onClick={() => act("approve")}><CheckCircle2 className="w-4 h-4" /> Setujui & Teruskan ke Penilai</Button>
+                      <Button className="flex-1 gap-2 h-11" data-testid="verify-approve-btn" disabled={!ack || busy} onClick={() => act("approve")}><CheckCircle2 className="w-4 h-4" /> Setujui & Teruskan ke Penilai</Button>
                       <Button variant="outline" className="flex-1 gap-2 h-11 text-red-600 border-red-300 hover:bg-red-50 hover:text-red-700" data-testid="verify-reject-mode-btn" onClick={() => setRejectMode(true)}><XCircle className="w-4 h-4" /> Kembalikan untuk Perbaikan</Button>
                     </>
                   ) : (

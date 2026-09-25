@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api, authUrl, formatApiErrorDetail } from "../lib/api";
 import { AREAS, TIPE_META } from "../lib/constants";
 import { TipeSummary } from "./TipeSummary";
+import { WordDownloadButton } from "./BeritaAcaraButtons";
 import { Button } from "./ui/button";
 import { Label } from "./ui/label";
 import { Checkbox } from "./ui/checkbox";
@@ -114,10 +115,10 @@ export function ReportsPanel({ canManage }) {
               <div className="rounded-xl border border-border overflow-x-auto">
                 <table className="w-full text-sm" data-testid="report-preview-table">
                   <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
-                    <tr><th className="px-3 py-2">Urusan</th><th className="px-3 py-2 text-center">F. Umum (maks 200)</th><th className="px-3 py-2 text-center">F. Teknis (maks 800)</th><th className="px-3 py-2 text-center">Total</th><th className="px-3 py-2 text-center">Nilai Akhir{multiplier ? " ×1,1" : ""}</th><th className="px-3 py-2 text-center">Tipe</th></tr>
+                    <tr><th className="px-3 py-2">Urusan</th><th className="px-3 py-2 text-center">F. Umum (maks 200)</th><th className="px-3 py-2 text-center">F. Teknis (maks 800)</th><th className="px-3 py-2 text-center">Total</th><th className="px-3 py-2 text-center">Nilai Akhir{multiplier ? " ×1,1" : ""}</th><th className="px-3 py-2 text-center">Tipe</th><th className="px-3 py-2 text-center">Word</th></tr>
                   </thead>
                   <tbody>
-                    {preview.rows.length === 0 && <tr><td colSpan={6} className="text-center py-6 text-muted-foreground">Belum ada urusan selesai dinilai.</td></tr>}
+                    {preview.rows.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-muted-foreground">Belum ada urusan selesai dinilai.</td></tr>}
                     {preview.rows.map((r) => (
                       <tr key={r.submission_id} className="border-t border-slate-100">
                         <td className="px-3 py-2 text-slate-700">{r.urusan}{r.sub_urusan ? ` — ${r.sub_urusan}` : ""}</td>
@@ -126,6 +127,7 @@ export function ReportsPanel({ canManage }) {
                         <td className="px-3 py-2 text-center font-mono">{r.total}</td>
                         <td className="px-3 py-2 text-center font-mono font-bold text-primary">{r.final}</td>
                         <td className="px-3 py-2 text-center"><TipeBadge tipe={r.tipe} /></td>
+                        <td className="px-3 py-2 text-center"><WordDownloadButton submissionId={r.submission_id} applyMultiplier={multiplier} testId={`preview-word-${r.submission_id}`} /></td>
                       </tr>
                     ))}
                     {preview.combined && (
@@ -136,6 +138,7 @@ export function ReportsPanel({ canManage }) {
                         <td className="px-3 py-2 text-center font-mono">{preview.combined.total}</td>
                         <td className="px-3 py-2 text-center font-mono font-bold text-primary">{preview.combined.final}</td>
                         <td className="px-3 py-2 text-center"><TipeBadge tipe={preview.combined.tipe} /></td>
+                        <td />
                       </tr>
                     )}
                   </tbody>
@@ -164,6 +167,14 @@ export function ReportsPanel({ canManage }) {
                     <div className="flex flex-wrap gap-1.5 mt-2">
                       {r.rows.map((row) => <TipeBadge key={row.submission_id} tipe={row.tipe} />)}
                       {r.combined && <span className="text-[10px] text-muted-foreground self-center">Gabungan: <TipeBadge tipe={r.combined.tipe} /></span>}
+                    </div>
+                    <div className="mt-3 space-y-1.5" data-testid={`report-word-list-${r.id}`}>
+                      {r.rows.map((row) => (
+                        <div key={row.submission_id} className="flex items-center justify-between gap-2 text-xs text-slate-700 rounded-lg bg-muted/40 px-2.5 py-1.5">
+                          <span className="truncate">{row.urusan}{row.sub_urusan ? ` — ${row.sub_urusan}` : ""} · <span className="font-mono font-semibold">{row.final}</span></span>
+                          <WordDownloadButton submissionId={row.submission_id} applyMultiplier={r.apply_multiplier} testId={`report-word-${r.id}-${row.submission_id}`} />
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>

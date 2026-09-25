@@ -79,6 +79,12 @@ export default function PerangkatDashboard() {
     try { await api.post(`/submissions/${activeId}/submit`); toast.success("Pengajuan dikirim untuk verifikasi"); await load(); }
     catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const deleteSubmission = async () => {
+    const s = deleteTarget; setDeleteTarget(null);
+    try { await api.delete(`/submissions/${s.id}`); toast.success("Pengajuan dihapus"); if (activeId === s.id) setActiveId(null); await load(); }
+    catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+  };
 
   const years = [...new Set(subs.map((s) => s.year))].sort((a, b) => b - a);
   const filtered = useMemo(() => yearFilter === "all" ? subs : subs.filter((s) => String(s.year) === String(yearFilter)), [subs, yearFilter]);
@@ -186,7 +192,10 @@ export default function PerangkatDashboard() {
                           <td className="px-4 py-3">{s.year}</td>
                           <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap" data-testid={`upload-time-${s.id}`}>{fmtDateTime(lastUploadAt(s))}</td>
                           <td className="px-4 py-3"><StatusPill status={s.status} /></td>
-                          <td className="px-4 py-3 text-right"><Button variant="outline" size="sm" className="gap-1.5" data-testid={`open-submission-${s.id}`} onClick={() => openDetail(s)}><Eye className="w-4 h-4" /> {s.status === "selesai" ? "Hasil" : editableStatus(s) ? "Kelola" : "Detail"}</Button></td>
+                          <td className="px-4 py-3 text-right"><div className="inline-flex gap-1.5">
+                            <Button variant="outline" size="sm" className="gap-1.5" data-testid={`open-submission-${s.id}`} onClick={() => openDetail(s)}><Eye className="w-4 h-4" /> {s.status === "selesai" ? "Hasil" : editableStatus(s) ? "Kelola" : "Detail"}</Button>
+                            {deletableStatus(s) && <Button variant="outline" size="sm" className="gap-1.5 text-red-600 border-red-200 hover:bg-red-50" data-testid={`delete-submission-${s.id}`} onClick={() => setDeleteTarget(s)}><Trash2 className="w-4 h-4" /> Hapus</Button>}
+                          </div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -238,10 +247,20 @@ export default function PerangkatDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Hapus Pengajuan?</DialogTitle><DialogDescription>Pengajuan <b>{deleteTarget?.device_name}</b> — {deleteTarget?.urusan} beserta berkas yang diunggah akan dihapus permanen.</DialogDescription></DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" data-testid="confirm-delete-cancel" onClick={() => setDeleteTarget(null)}>Batal</Button>
+            <Button variant="destructive" data-testid="confirm-delete-yes" onClick={deleteSubmission}>Ya, Hapus</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function editableStatus(s) { return s.status === "draft" || s.status === "ditolak"; }
+function deletableStatus(s) { return ["draft", "ditolak", "menunggu_verifikasi"].includes(s.status); }
 const TABLE_KEYS = { device_name: "device_name", urusan: (s) => `${s.urusan} ${s.sub_urusan || ""}`, year: "year", uploaded_at: (s) => lastUploadAt(s), status: (s) => STATUS_LABEL[s.status] || s.status };
 const STATUS_LABEL = { draft: "Draf", menunggu_verifikasi: "Menunggu Verifikasi", ditolak: "Dikembalikan Perbaikan", menunggu_penilaian: "Menunggu Penilaian", selesai: "Selesai Dinilai" };

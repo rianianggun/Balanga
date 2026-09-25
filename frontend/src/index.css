@@ -27,20 +27,20 @@ body {
         --card-foreground: 215 30% 12%;
         --popover: 0 0% 100%;
         --popover-foreground: 215 30% 12%;
-        --primary: 160 84% 20%;
-        --primary-foreground: 0 0% 100%;
+        --primary: 202 76% 69%;
+        --primary-foreground: 215 40% 12%;
         --secondary: 210 40% 96%;
         --secondary-foreground: 215 30% 12%;
         --muted: 210 40% 96%;
         --muted-foreground: 215 16% 47%;
-        --accent: 32 95% 44%;
-        --accent-foreground: 0 0% 100%;
+        --accent: 202 76% 69%;
+        --accent-foreground: 215 40% 12%;
         --destructive: 0 72% 51%;
         --destructive-foreground: 0 0% 100%;
         --border: 214 32% 91%;
         --input: 214 32% 91%;
-        --ring: 160 84% 20%;
-        --chart-1: 160 84% 25%;
+        --ring: 202 76% 69%;
+        --chart-1: 202 76% 55%;
         --chart-2: 32 95% 44%;
         --chart-3: 199 89% 48%;
         --chart-4: 280 65% 60%;
@@ -54,19 +54,19 @@ body {
         --card-foreground: 210 40% 96%;
         --popover: 215 33% 13%;
         --popover-foreground: 210 40% 96%;
-        --primary: 160 70% 40%;
-        --primary-foreground: 0 0% 100%;
+        --primary: 202 76% 69%;
+        --primary-foreground: 215 40% 12%;
         --secondary: 215 25% 20%;
         --secondary-foreground: 210 40% 96%;
         --muted: 215 25% 20%;
         --muted-foreground: 215 20% 65%;
-        --accent: 32 95% 50%;
-        --accent-foreground: 0 0% 10%;
+        --accent: 202 76% 69%;
+        --accent-foreground: 215 40% 12%;
         --destructive: 0 62% 45%;
         --destructive-foreground: 0 0% 100%;
         --border: 215 25% 22%;
         --input: 215 25% 22%;
-        --ring: 160 70% 40%;
+        --ring: 202 76% 69%;
     }
 }
 
@@ -81,3 +81,7 @@ body {
         font-family: 'Plus Jakarta Sans', sans-serif;
     }
 }
+
+/* Teks aksen tetap terbaca di latar terang meski warna utama (#76C0EC) cerah */
+.text-primary, .text-accent { color: hsl(202 72% 36%); }
+.text-primary\/70 { color: hsl(202 72% 36% / 0.7); }

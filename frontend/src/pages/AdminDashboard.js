@@ -2,6 +2,8 @@ import React, { useEffect, useState, useCallback } from "react";
 import { api, authUrl, formatApiErrorDetail } from "../lib/api";
 import { useTableTools, SearchBox, SortTh } from "../components/TableTools";
 import { TipeSummary } from "../components/TipeSummary";
+import { RekapPenilaian } from "../components/RekapPenilaian";
+import { ReportsPanel } from "../components/ReportsPanel";
 import { Navbar } from "../components/Navbar";
 import { AREAS, ROLE_META, URUSAN, SUB_URUSAN } from "../lib/constants";
 import { Button } from "../components/ui/button";
@@ -14,7 +16,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from ".
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { toast } from "sonner";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, LineChart, Line, Legend } from "recharts";
-import { Users, ListChecks, CalendarRange, LayoutDashboard, Plus, Pencil, Trash2, KeyRound, Lock, Unlock, History, Upload, Loader2, FileSpreadsheet, FileText } from "lucide-react";
+import { Users, ListChecks, CalendarRange, LayoutDashboard, Plus, Pencil, Trash2, KeyRound, Lock, Unlock, History, Upload, Loader2, FileSpreadsheet, FileText, BarChart3, FileType2, MessageCircle } from "lucide-react";
 
 export default function AdminDashboard() {
   const [period, setPeriod] = useState(null);
@@ -23,8 +25,8 @@ export default function AdminDashboard() {
       <Navbar period={period} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <div className="mb-8">
-          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 flex items-center gap-2"><LayoutDashboard className="w-7 h-7 text-purple-600" /> Panel Administrator</h1>
-          <p className="text-muted-foreground text-sm mt-1">Kelola pengguna, indikator PP 18/2016, periode evaluasi, dan jejak audit.</p>
+          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 flex items-center gap-2"><LayoutDashboard className="w-7 h-7 text-primary" /> Panel Administrator</h1>
+          <p className="text-muted-foreground text-sm mt-1">Kelola pengguna, indikator PP 18/2016, periode evaluasi, rekap penilaian, laporan hasil, dan jejak audit.</p>
         </div>
         <Tabs defaultValue="overview">
           <TabsList className="flex-wrap h-auto">
@@ -32,12 +34,16 @@ export default function AdminDashboard() {
             <TabsTrigger value="users" data-testid="tab-users" className="gap-1.5"><Users className="w-4 h-4" />Pengguna</TabsTrigger>
             <TabsTrigger value="indicators" data-testid="tab-indicators" className="gap-1.5"><ListChecks className="w-4 h-4" />Indikator</TabsTrigger>
             <TabsTrigger value="periods" data-testid="tab-periods" className="gap-1.5"><CalendarRange className="w-4 h-4" />Periode</TabsTrigger>
+            <TabsTrigger value="rekap" data-testid="tab-rekap" className="gap-1.5"><BarChart3 className="w-4 h-4" />Rekap Penilaian</TabsTrigger>
+            <TabsTrigger value="laporan" data-testid="tab-laporan" className="gap-1.5"><FileType2 className="w-4 h-4" />Laporan Hasil</TabsTrigger>
             <TabsTrigger value="audit" data-testid="tab-audit" className="gap-1.5"><History className="w-4 h-4" />Audit</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="mt-6"><Overview /></TabsContent>
           <TabsContent value="users" className="mt-6"><UsersTab /></TabsContent>
           <TabsContent value="indicators" className="mt-6"><IndicatorsTab /></TabsContent>
           <TabsContent value="periods" className="mt-6"><PeriodsTab onActive={setPeriod} /></TabsContent>
+          <TabsContent value="rekap" className="mt-6"><RekapPenilaian periodId={period?.id} /></TabsContent>
+          <TabsContent value="laporan" className="mt-6"><ReportsPanel canManage={true} /></TabsContent>
           <TabsContent value="audit" className="mt-6"><AuditTab /></TabsContent>
         </Tabs>
       </main>
@@ -129,7 +135,7 @@ function UsersTab() {
   const [editing, setEditing] = useState(null);
   const [pwUser, setPwUser] = useState(null);
   const [newPw, setNewPw] = useState("");
-  const empty = { email: "", password: "", name: "", role: "perangkat", area: "" };
+  const empty = { email: "", password: "", name: "", role: "perangkat", area: "", phone: "" };
   const [form, setForm] = useState(empty);
   const load = useCallback(async () => setUsers((await api.get("/users")).data), []);
   useEffect(() => { load(); }, [load]);
@@ -137,8 +143,15 @@ function UsersTab() {
 
   const save = async () => {
     try {
-      if (editing) { await api.put(`/users/${editing.id}`, { name: form.name, role: form.role, area: needArea ? form.area : null }); toast.success("Diperbarui"); }
-      else { if (!form.email || !form.password || !form.name) return toast.error("Lengkapi data"); if (needArea && !form.area) return toast.error("Pilih area"); await api.post("/users", { ...form, area: needArea ? form.area : null }); toast.success("Dibuat"); }
+      if (editing) { await api.put(`/users/${editing.id}`, { name: form.name, role: form.role, area: needArea ? form.area : null, phone: form.phone || undefined }); toast.success("Diperbarui"); }
+      else {
+        if (!form.email || !form.password || !form.name) return toast.error("Lengkapi data");
+        if (needArea && !form.area) return toast.error("Pilih area");
+        if (!form.phone) return toast.error("Isi nomor telepon (WhatsApp aktif)");
+        const { data } = await api.post("/users", { ...form, area: needArea ? form.area : null });
+        if (data.whatsapp?.sent) toast.success("Pengguna dibuat · notifikasi WhatsApp terkirim");
+        else toast.warning(`Pengguna dibuat, WhatsApp gagal: ${data.whatsapp?.detail || "tidak diketahui"}`);
+      }
       setOpen(false); setEditing(null); setForm(empty); await load();
     } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
   };
@@ -164,12 +177,12 @@ function UsersTab() {
             {rows.map((u) => (
               <tr key={u.id} data-testid={`user-row-${u.id}`} className="border-t border-border">
                 <td className="px-4 py-3 font-medium text-slate-800">{u.name}</td>
-                <td className="px-4 py-3 text-muted-foreground">{u.email}</td>
+                <td className="px-4 py-3 text-muted-foreground">{u.email}{u.phone && <div className="text-[11px] flex items-center gap-1 mt-0.5" data-testid={`user-phone-${u.id}`}><MessageCircle className="w-3 h-3" />{u.phone}</div>}</td>
                 <td className="px-4 py-3"><span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${ROLE_META[u.role]?.cls}`}>{ROLE_META[u.role]?.label}</span></td>
                 <td className="px-4 py-3 text-muted-foreground text-xs">{u.area || "-"}</td>
                 <td className="px-4 py-3 text-center"><Switch checked={u.active !== false} onCheckedChange={() => toggleActive(u)} data-testid={`toggle-active-${u.id}`} /></td>
                 <td className="px-4 py-3"><div className="flex justify-end gap-1">
-                  <Button variant="ghost" size="icon" data-testid={`edit-user-${u.id}`} onClick={() => { setEditing(u); setForm({ ...empty, name: u.name, role: u.role, area: u.area || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
+                  <Button variant="ghost" size="icon" data-testid={`edit-user-${u.id}`} onClick={() => { setEditing(u); setForm({ ...empty, name: u.name, role: u.role, area: u.area || "", phone: u.phone || "" }); setOpen(true); }}><Pencil className="w-4 h-4" /></Button>
                   <Button variant="ghost" size="icon" onClick={() => setPwUser(u)}><KeyRound className="w-4 h-4" /></Button>
                   <Button variant="ghost" size="icon" className="text-red-600" data-testid={`delete-user-${u.id}`} onClick={() => del(u)}><Trash2 className="w-4 h-4" /></Button>
                 </div></td>
@@ -187,6 +200,11 @@ function UsersTab() {
               <div className="space-y-1.5"><Label>Email</Label><Input data-testid="user-email-input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Kata Sandi</Label><Input data-testid="user-password-input" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></div>
             </>)}
+            <div className="space-y-1.5">
+              <Label>Nomor Telepon (WhatsApp)</Label>
+              <Input data-testid="user-phone-input" type="tel" placeholder="mis. 081234567890" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+              {!editing && <div className="rounded-lg bg-primary/10 border border-primary/30 px-3 py-2 text-xs text-slate-700 flex items-start gap-1.5" data-testid="user-phone-warning"><MessageCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> Gunakan nomor telepon dengan <b>WhatsApp aktif</b>. Pengguna baru akan menerima pesan berisi username dan kata sandi secara otomatis.</div>}
+            </div>
             <div className="space-y-1.5"><Label>Peran</Label>
               <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v })}>
                 <SelectTrigger data-testid="user-role-select"><SelectValue /></SelectTrigger>

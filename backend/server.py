@@ -25,10 +25,37 @@ from surat import build_surat_pdf
 from ai_scoring import recommend_scores
 from demo_seed import seed_demo
 from exports import ba_context, build_berita_acara_xlsx, build_berita_acara_pdf, build_rekap_xlsx, build_rekap_pdf
+from docx_report import build_berita_acara_docx
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+FONNTE_TOKEN = (os.environ.get("FONNTE_TOKEN") or "").strip()
+
+def normalize_phone(p: str) -> str:
+    d = re.sub(r"\D", "", p or "")
+    if d.startswith("0"): d = "62" + d[1:]
+    elif d.startswith("8"): d = "62" + d
+    return d
+
+def send_whatsapp(target: str, message: str) -> dict:
+    if not FONNTE_TOKEN:
+        return {"sent": False, "detail": "FONNTE_TOKEN belum diatur"}
+    try:
+        r = requests.post("https://api.fonnte.com/send", headers={"Authorization": FONNTE_TOKEN},
+                          data={"target": target, "message": message, "countryCode": "62"}, timeout=(5, 30))
+        try: body = r.json()
+        except ValueError: body = {"raw": r.text[:300]}
+        ok = r.status_code < 400 and bool(body.get("status"))
+        return {"sent": ok, "detail": str(body.get("reason") or body.get("detail") or ("terkirim" if ok else "ditolak Fonnte")), "provider": body}
+    except requests.RequestException as e:
+        return {"sent": False, "detail": f"Gagal menghubungi Fonnte: {e.__class__.__name__}"}
+
+WA_TEMPLATE = ("Halo, {name} ini adalah pesan automatis dari website Balanga\n"
+               "Ini adalah username : {email} dan password : {password} kamu\n"
+               "Mohon untuk diingat untuk tidak memberikan username kata sandi kamu ke pihak lain\n"
+               "Terima kasih")
 
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
@@ -279,12 +306,14 @@ class UserCreate(BaseModel):
     name: str
     role: str
     area: Optional[str] = None
+    phone: Optional[str] = None
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     area: Optional[str] = None
     active: Optional[bool] = None
+    phone: Optional[str] = None
 
 class PasswordReset(BaseModel):
     password: str
@@ -409,14 +438,22 @@ async def create_user(input: UserCreate, user: dict = Depends(require_roles("adm
         raise HTTPException(status_code=400, detail="Area wajib untuk peran perangkat/verifikator")
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="Email sudah terdaftar")
-    doc = {"id": str(uuid.uuid4()), "email": email, "name": input.name, "role": input.role,
+    phone = normalize_phone(input.phone) if input.phone else None
+    doc = {"id": str(uuid.uuid4()), "email": email, "name": input.name, "role": input.role, "phone": phone,
            "area": input.area, "active": True, "password_hash": hash_password(input.password), "created_at": now_iso()}
     await db.users.insert_one(doc)
-    return {k: v for k, v in doc.items() if k not in ("_id", "password_hash")}
+    out = {k: v for k, v in doc.items() if k not in ("_id", "password_hash")}
+    if phone:
+        wa = send_whatsapp(phone, WA_TEMPLATE.format(name=input.name, email=email, password=input.password))
+        await db.whatsapp_log.insert_one({"id": str(uuid.uuid4()), "user_id": doc["id"], "target": phone, "sent": wa["sent"],
+                                          "detail": wa.get("detail"), "provider": wa.get("provider"), "created_at": now_iso()})
+        out["whatsapp"] = {"sent": wa["sent"], "detail": wa.get("detail")}
+    return out
 
 @api_router.put("/users/{uid}")
 async def update_user(uid: str, input: UserUpdate, user: dict = Depends(require_roles("admin"))):
     updates = {k: v for k, v in input.model_dump().items() if v is not None}
+    if "phone" in updates: updates["phone"] = normalize_phone(updates["phone"]) or None
     if not updates: raise HTTPException(status_code=400, detail="Tidak ada perubahan")
     res = await db.users.update_one({"id": uid}, {"$set": updates})
     if res.matched_count == 0: raise HTTPException(status_code=404, detail="Pengguna tidak ditemukan")
@@ -686,6 +723,19 @@ async def delete_upload(sid: str, indicator_id: str, user: dict = Depends(requir
     await db.submissions.update_one({"id": sid}, {"$unset": {f"uploads.{indicator_id}": ""}, "$set": {"updated_at": now_iso()}})
     return {"message": "Berkas dihapus"}
 
+@api_router.delete("/submissions/{sid}")
+async def delete_submission(sid: str, user: dict = Depends(require_roles("perangkat"))):
+    s = await db.submissions.find_one({"id": sid})
+    if not s or s["perangkat_user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Pengajuan tidak ditemukan")
+    if s["status"] in ("menunggu_penilaian", "selesai"):
+        raise HTTPException(status_code=403, detail="Pengajuan yang sudah diverifikasi/dinilai tidak dapat dihapus")
+    file_ids = [m["file_id"] for m in (s.get("uploads") or {}).values() if m and m.get("file_id")]
+    if file_ids:
+        await db.files.update_many({"id": {"$in": file_ids}}, {"$set": {"is_deleted": True}})
+    await db.submissions.delete_one({"id": sid})
+    return {"message": "Pengajuan dihapus"}
+
 @api_router.post("/submissions/{sid}/submit")
 async def submit_submission(sid: str, user: dict = Depends(require_roles("perangkat"))):
     s = await db.submissions.find_one({"id": sid})
@@ -775,6 +825,10 @@ async def berita_acara(sid: str, format: str = Query("xlsx"), pengali: float = Q
     req_ids, umum, teknis = await required_indicator_ids(s)
     ctx = ba_context(s, umum, teknis, pengali, file_link)
     base = f"Berita_Acara_{s['device_name'].replace(' ', '_')}_{_norm(s['urusan']).replace(' ', '_')}"
+    if format == "docx":
+        return StreamingResponse(io.BytesIO(build_berita_acara_docx(ctx, pengali == 1.1)),
+                                 media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                 headers={"Content-Disposition": f'attachment; filename="Laporan_Hasil_{base}.docx"'})
     if format == "pdf":
         return StreamingResponse(io.BytesIO(build_berita_acara_pdf(ctx)), media_type="application/pdf",
                                  headers={"Content-Disposition": f'inline; filename="{base}.pdf"'})
@@ -1014,7 +1068,8 @@ async def device_tipes(period_id: str = None, pengali: float = 1.0, area: str = 
 
 @api_router.get("/stats/tipe-summary")
 async def stats_tipe_summary(period_id: Optional[str] = None, pengali: float = 1.0, user: dict = Depends(get_current_user)):
-    devs = await device_tipes(period_id, pengali)
+    area = user.get("area") if user["role"] in ("perangkat", "verifikator") else None
+    devs = await device_tipes(period_id, pengali, area)
     counts = {"A": 0, "B": 0, "C": 0, "Lainnya": 0}
     for d in devs:
         counts[d["tipe_bucket"]] += 1
@@ -1088,6 +1143,35 @@ async def report_rekap(period_id: Optional[str] = None, format: str = Query("xls
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{base}.xlsx"'})
 
+@api_router.get("/reports/rekap-area")
+async def report_rekap_area(area: str, period_id: Optional[str] = None, pengali: float = Query(1.0),
+                            auth: str = Query(None), authorization: str = Header(None)):
+    u = await user_from_token(auth, authorization)
+    if u["role"] not in ("admin", "penilai"):
+        raise HTTPException(status_code=403, detail="Akses ditolak untuk peran ini")
+    if pengali not in (1.0, 1.1):
+        raise HTTPException(status_code=400, detail="Pengali harus 1 atau 1,1")
+    devs = await device_tipes(period_id, pengali, area)
+    wb = Workbook(); ws = wb.active; ws.title = "Rincian PD"
+    head_fill = PatternFill("solid", fgColor="76C0EC"); head_font = Font(bold=True, color="0F172A")
+    ws.append([f"Rincian Total Skor Perangkat Daerah — {area}"]); ws["A1"].font = Font(bold=True, size=13)
+    ws.append([f"Pengali 1,1: {'Ya' if pengali == 1.1 else 'Tidak'}"])
+    ws.append([])
+    headers = ["#", "Perangkat Daerah", "Urusan", "F. Umum", "F. Teknis", "Total", "Nilai Akhir", "Tipe"]
+    ws.append(headers)
+    hr = ws.max_row
+    for c in range(1, len(headers) + 1):
+        cell = ws.cell(row=hr, column=c); cell.fill = head_fill; cell.font = head_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for i, d in enumerate(devs, start=1):
+        ws.append([i, d["device_name"], ", ".join(d["urusan"]), d["umum_total"], d["teknis_total"], d["total"], d["final"], d["tipe"]["label"]])
+    for i, w in enumerate([5, 40, 50, 10, 10, 10, 12, 24], start=1):
+        ws.column_dimensions[chr(64 + i)].width = w
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"Rincian_PD_{area.replace(' ', '_')}.xlsx"
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
 @api_router.get("/audit")
 async def audit_feed(user: dict = Depends(require_roles("admin"))):
     subs = await db.submissions.find({}, {"_id": 0, "id": 1, "device_name": 1, "area": 1, "urusan": 1, "audit": 1}).to_list(3000)
@@ -1158,6 +1242,7 @@ async def seed():
     elif not verify_password(admin_pw, existing.get("password_hash", "")):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_pw)}})
     demo = [
+        ("riani.anggun.adp@gmail.com", "Admin@2026", "Riani Anggun", "admin", None),
         ("verifikator@kalteng.go.id", "Verif123!", "Verifikator Palangka Raya", "verifikator", "Kota Palangka Raya"),
         ("penilai@kalteng.go.id", "Nilai123!", "Tim Penilai Provinsi", "penilai", None),
         ("perangkat@kalteng.go.id", "Kerja123!", "Dinas Pendidikan Kota Palangka Raya", "perangkat", "Kota Palangka Raya"),

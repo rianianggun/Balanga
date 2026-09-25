@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, authUrl } from "../lib/api";
 import { TipeBadge } from "./TipeSummary";
 import { SearchBox } from "./TableTools";
 import { Button } from "./ui/button";
@@ -7,7 +7,7 @@ import { Checkbox } from "./ui/checkbox";
 import { Label } from "./ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
-import { CheckCircle2, Clock, MinusCircle, ListOrdered, MapPin } from "lucide-react";
+import { CheckCircle2, Clock, MinusCircle, ListOrdered, MapPin, FileSpreadsheet } from "lucide-react";
 
 const STATUS = {
   selesai: { label: "Semua dinilai", cls: "bg-emerald-100 text-emerald-800 border-emerald-300", Icon: CheckCircle2 },
@@ -99,6 +99,12 @@ export function RekapPenilaian({ periodId }) {
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader><DialogTitle>Rincian Total Skor — {detail?.area}</DialogTitle><DialogDescription>Semua perangkat daerah yang telah selesai dinilai, terurut dari skor tertinggi{pengali === 1.1 ? " (×1,1)" : ""}.</DialogDescription></DialogHeader>
+          <div className="flex justify-end">
+            <Button variant="outline" size="sm" className="gap-1.5 text-emerald-700 border-emerald-300 hover:bg-emerald-50" data-testid="rekap-detail-excel-btn"
+              onClick={() => window.open(authUrl("/reports/rekap-area", { area: detail?.area, period_id: periodId, pengali }), "_blank", "noopener")}>
+              <FileSpreadsheet className="w-4 h-4" /> Unduh Excel
+            </Button>
+          </div>
           <div className="max-h-[60vh] overflow-auto rounded-xl border border-border">
             <table className="w-full text-sm" data-testid="rekap-detail-table">
               <thead className="bg-muted/50 text-left text-xs text-muted-foreground sticky top-0"><tr><th className="px-3 py-2">#</th><th className="px-3 py-2">Perangkat Daerah</th><th className="px-3 py-2">Urusan</th><th className="px-3 py-2 text-right">F. Umum</th><th className="px-3 py-2 text-right">F. Teknis</th><th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Akhir</th><th className="px-3 py-2 text-center">Tipe</th></tr></thead>

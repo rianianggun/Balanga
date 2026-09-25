@@ -72,7 +72,7 @@ def ba_rows(s: dict, indicators: list, link_fn):
         if up.get("file_id"):
             link = link_fn(up["file_id"]) if link_fn else ""
             ket = up.get("original_filename") or up["file_id"]
-        out.append({"no": n, "indikator": ind["name"], "sebelum": data, "hasil": hasil,
+        out.append({"no": n, "indikator": ind["name"], "sebelum": data, "hasil": hasil, "data_validasi": v.get("data_validasi") or "",
                     "keterangan": ket, "link": link, "skor": v.get("score", "")})
     return out
 
